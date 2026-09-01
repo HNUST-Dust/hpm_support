@@ -6,13 +6,13 @@
 /dts-v1/;
 
 #include <hpmicro/hpm6750.dtsi>
-#include "hpm6750evk2-pinctrl.dtsi"
+#include "dust-hpm6750-pinctrl.dtsi"
 #include <zephyr/dt-bindings/display/panel.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 
 / {
-	model = "HPMicro HPM6750EVK2";
-	compatible = "HPMicro,hpm6750evk2";
+	model = "Dust HPM6750";
+	compatible = "dust,hpm6750";
 
 	aliases {
 		led0 = &led_r;
@@ -21,6 +21,8 @@
 		sw0 = &pbutn;
 		canbus = &can2;
 		sdhc0 = &sd0;
+		onboard-imu-cs = &onboard_imu_cs;
+		onboard-imu-drdy = &onboard_imu_drdy;
 	};
 
 	chosen {
@@ -62,6 +64,19 @@
 		pbutn: pbutn {
 			gpios = <&gpioe 31 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	onboard_imu_gpios {
+		compatible = "gpio-leds";
+
+		onboard_imu_cs: onboard_imu_cs {
+			gpios = <&gpioa 26 GPIO_ACTIVE_LOW>;
+		};
+
+		/* ICM42688P-HXY INT1: active-high data-ready input. */
+		onboard_imu_drdy: onboard_imu_drdy {
+			gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
@@ -208,6 +223,12 @@
 	status = "okay";
 };
 
+&gpioa {
+	pinctrl-0 = <&pinmux_gpioa_onboard_imu_cs>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &gpioe {
 	pinctrl-0 = <&pinmux_gpioe>;
 	pinctrl-names = "default";
@@ -236,7 +257,6 @@
 	status = "okay";
 	pinctrl-0 = <&pinmux_spi2>;
 	pinctrl-names = "default";
-	cs-gpios = <&gpioa 26 GPIO_ACTIVE_LOW>;
 	/* HDMA channels 0 and 1, muxed to SPI2 RX and TX */
 	dmas = <&hdma 0 4>, <&hdma 1 5>;
 	dma-names = "rx", "tx";

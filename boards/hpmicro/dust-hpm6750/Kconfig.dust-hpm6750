@@ -1,5 +1,5 @@
 # Copyright (c) 2022 HPMicro
 # SPDX-License-Identifier: Apache-2.0
 
-config BOARD_HPM6750EVK2
+config BOARD_DUST_HPM6750
 	select SOC_HPM6750

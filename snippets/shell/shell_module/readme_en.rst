@@ -25,8 +25,8 @@ Path
 Build Cmd
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S shell_module zephyr/samples/subsys/shell/shell_module
+    west build -p always -b dust-hpm6750 -S shell_module zephyr/samples/subsys/shell/shell_module

@@ -70,11 +70,17 @@
 
 	pinmux_spi2: pinmux_spi2 {
 		group0 {
-			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 26), IOC_TYPE_IOC, 0, 5)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 27), IOC_TYPE_IOC, 0, 5)>,
+			/* PA26 is GPIO CS; SPI2 keeps SCLK/MOSI/MISO only. */
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 27), IOC_TYPE_IOC, 0, 5)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 31), IOC_TYPE_IOC, 0, 5)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 0), IOC_TYPE_IOC, 0, 5)>;
-					 input-enable;
+			input-enable;
+		};
+	};
+
+	pinmux_gpioa_onboard_imu_cs: pinmux_gpioa_onboard_imu_cs {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 26), IOC_TYPE_IOC, 0, 0)>;
 		};
 	};
 

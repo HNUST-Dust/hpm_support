@@ -84,7 +84,7 @@ ZCC 工具链使用
 
     .. code-block:: bash
 
-        west build -b hpm6750evk2 samples/hello_world
+        west build -b dust-hpm6750 samples/hello_world
 
 切换回其他工具链
 ----------------

@@ -20,11 +20,11 @@ Board Setting
 Build Cmd
 -----------
 
-- Taking hpm6750evk2 as an example, execute the following command in the sdk_glue directory
+- Taking dust-hpm6750 as an example, execute the following command in the sdk_glue directory
 
     .. code-block:: console
 
-        west build -p always -b hpm6750evk2 samples/cherryusb/device/msc/ram_disk/
+        west build -p always -b dust-hpm6750 samples/cherryusb/device/msc/ram_disk/
 
 Running the example
 -------------------

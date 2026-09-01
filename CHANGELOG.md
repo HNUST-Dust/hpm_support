@@ -17,7 +17,7 @@ All changes since 0.6.0
 
 ### Verified sample: (-PATH @CASE :SNIPPETS)
 
-- hpm6750evk2:
+- dust-hpm6750:
   - zephyr/samples/hello_world
   - zephyr/samples/basic/blinky: blinky
   - zephyr/samples/basic/blinky_pwm: blinky_pwm
@@ -152,7 +152,7 @@ All changes since 0.1.0
   - soc: use common nocache.ld
   - soc: boot_header offset defined in soc instead of boards
   - soc: modify common common linker file
-  - boards: clean hpm6750evk2 and hpm6800evk config tree
+  - boards: clean dust-hpm6750 and hpm6800evk config tree
   - kconfig: update to kconfigv2 model
   - drivers: add display drivers
   - drivers: add sdio drivers
@@ -180,7 +180,7 @@ All changes since 0.1.0
   - drivers: add serial driver
   - drivers: add pinctrl and gpio drivers
   - boards: add boards flash and debug supoort
-  - boards: add hpm6750evk2 and hpm6800evk support
+  - boards: add dust-hpm6750 and hpm6800evk support
   - sdk_glue: add version file
   - soc: add hpm67xx series and hpm68xx series kconfig
   - dts: add hpm67xx series and hpm68xx series dts map

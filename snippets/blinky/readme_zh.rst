@@ -18,4 +18,4 @@ IO驱动灯闪烁
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S blinky zephyr/samples/basic/blinky
+    west build -p always -b dust-hpm6750 -S blinky zephyr/samples/basic/blinky

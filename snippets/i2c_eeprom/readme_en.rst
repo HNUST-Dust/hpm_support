@@ -14,8 +14,8 @@ Path
 Build Cmd
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S i2c_eeprom zephyr/samples/drivers/eeprom
+    west build -p always -b dust-hpm6750 -S i2c_eeprom zephyr/samples/drivers/eeprom

@@ -14,11 +14,11 @@ hid_keyboard
 命令行
 ------------
 
-以hpm6750evk2为例:
+以dust-hpm6750为例:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
+    west build -p always -b dust-hpm6750 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
 
 已知问题
 ----------

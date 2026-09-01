@@ -14,11 +14,11 @@ Sample Path
 Build Cmd
 ------------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S hid-mouse samples/subsys/usb/hid-mouse -T sample.usb_device_next.hid-mouse
+    west build -p always -b dust-hpm6750 -S hid-mouse samples/subsys/usb/hid-mouse -T sample.usb_device_next.hid-mouse
 
 Known Issues
 -------------

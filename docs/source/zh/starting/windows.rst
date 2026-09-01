@@ -137,21 +137,21 @@ GNU 交叉编译工具链
 
 编译zephyr的button sample
 --------------------------
-    编译hpm6750evk2的button sample, **build** 目录可以放置在workspace的任意地方,推荐放在zephyr的目录下。
+    编译dust-hpm6750的button sample, **build** 目录可以放置在workspace的任意地方,推荐放在zephyr的目录下。
 
 #. 构建与编译
 
     .. code-block:: console
 
         cd %workspace%\zephyr
-        west build -p always -b hpm6750evk2 samples\basic\button
+        west build -p always -b dust-hpm6750 samples\basic\button
 
 ``-p`` 选项, ``always`` 重新编译, ``auto`` 增量编译。
 ``-S`` 选项, 特定的硬件或者配置选项支持,如:
     
     .. code-block:: console
 
-        west build -p always -b hpm6750evk2 -S blinky_pwm samples/basic/blinky_pwm
+        west build -p always -b dust-hpm6750 -S blinky_pwm samples/basic/blinky_pwm
 
 #. 烧录或调试
 

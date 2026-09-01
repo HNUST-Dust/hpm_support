@@ -232,7 +232,7 @@ Once inside the container, you can build and flash samples:
     .. code-block:: console
 
         cd /home/zephyr/zephyr_space/zephyr
-        west build -p always -b hpm6750evk2 -S blinky samples/basic/blinky
+        west build -p always -b dust-hpm6750 -S blinky samples/basic/blinky
 
 #. Flash to target (connect your board first)
 
@@ -255,7 +255,7 @@ Available Boards
 
 Common boards include:
 
-- ``hpm6750evk2``
+- ``dust-hpm6750``
 - ``hpm6800evk``
 - ``hpm6200evk``
 - ``hpm6e00evk``

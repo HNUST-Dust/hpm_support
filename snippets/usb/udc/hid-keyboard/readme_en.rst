@@ -14,11 +14,11 @@ Path
 Build Cmd
 ------------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
+    west build -p always -b dust-hpm6750 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
 
 Known Issues
 -------------

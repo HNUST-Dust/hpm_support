@@ -14,8 +14,8 @@ Sample Path
 Build Cmd
 ------------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S mass samples/subsys/usb/mass -T sample.usb_device_next.mass_ram_none
+    west build -p always -b dust-hpm6750 -S mass samples/subsys/usb/mass -T sample.usb_device_next.mass_ram_none

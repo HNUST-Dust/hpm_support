@@ -59,7 +59,7 @@
     </td>
   </tr>
   <tr>
-    <td><b>hpm6750evk2</b></td>
+    <td><b>dust-hpm6750</b></td>
     <td>HPM6750</td>
     <td>
       <img src="https://img.shields.io/badge/CAN-✓-success?style=flat-square" alt="CAN">
@@ -135,7 +135,7 @@ west update
 west supply
 
 # Build hello_world example
-west build -p always -b hpm6750evk2 zephyr/samples/hello_world
+west build -p always -b dust-hpm6750 zephyr/samples/hello_world
 
 # Flash to board
 west flash
@@ -144,7 +144,7 @@ west flash
 ### Build with CMake
 
 ```bash
-cmake -GNinja -B build -DBOARD=hpm6750evk2 zephyr/samples/hello_world
+cmake -GNinja -B build -DBOARD=dust-hpm6750 zephyr/samples/hello_world
 ninja -C build
 ```
 

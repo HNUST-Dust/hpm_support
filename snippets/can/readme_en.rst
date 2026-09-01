@@ -15,10 +15,10 @@ Path
 Build Cmd
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/api
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/timing
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/shell
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/api
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/timing
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/shell

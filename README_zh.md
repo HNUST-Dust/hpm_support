@@ -59,7 +59,7 @@
     </td>
   </tr>
   <tr>
-    <td><b>hpm6750evk2</b></td>
+    <td><b>dust-hpm6750</b></td>
     <td>HPM6750</td>
     <td>
       <img src="https://img.shields.io/badge/CAN-✓-success?style=flat-square" alt="CAN">
@@ -135,7 +135,7 @@ west update
 west supply
 
 # 构建 hello_world 示例
-west build -p always -b hpm6750evk2 zephyr/samples/hello_world
+west build -p always -b dust-hpm6750 zephyr/samples/hello_world
 
 # 烧录到开发板
 west flash
@@ -144,7 +144,7 @@ west flash
 ### 使用 CMake 构建
 
 ```bash
-cmake -GNinja -B build -DBOARD=hpm6750evk2 zephyr/samples/hello_world
+cmake -GNinja -B build -DBOARD=dust-hpm6750 zephyr/samples/hello_world
 ninja -C build
 ```
 

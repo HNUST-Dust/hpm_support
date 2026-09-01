@@ -29,7 +29,7 @@ canopen demo提供以下功能:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S canopennode samples/modules/canopennode
+    west build -p always -b dust-hpm6750 -S canopennode samples/modules/canopennode
 
 硬件设置
 --------

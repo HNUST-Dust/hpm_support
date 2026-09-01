@@ -14,11 +14,11 @@ Path
 Build Cmd
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S blinky_pwm zephyr/samples/basic/blinky_pwm
+    west build -p always -b dust-hpm6750 -S blinky_pwm zephyr/samples/basic/blinky_pwm
 
 Note
 ------

@@ -137,21 +137,21 @@ If you already have a RISC-V GCC toolchain, you can use it directly.
 
 Building Zephyr Button Sample
 ------------------------------
-    Build the button sample for hpm6750evk2. The build directory can be placed anywhere in the workspace (recommended under workspace/zephyr/)
+    Build the button sample for dust-hpm6750. The build directory can be placed anywhere in the workspace (recommended under workspace/zephyr/)
 
 #. Build and compile
 
     .. code-block:: console
 
         cd %workspace%\zephyr
-        west build -p always -b hpm6750evk2 samples\basic\button
+        west build -p always -b dust-hpm6750 samples\basic\button
 
 `-p` option: `always` for clean build, `auto` for incremental build.
 `-S` option: Apply hardware-specific configurations.
     
     .. code-block:: console
 
-        west build -p always -b hpm6750evk2 -S blinky_pwm samples/basic/blinky_pwm
+        west build -p always -b dust-hpm6750 -S blinky_pwm samples/basic/blinky_pwm
 
 #. Flashing or Debugging
 

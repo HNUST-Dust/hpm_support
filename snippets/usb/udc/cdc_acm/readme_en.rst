@@ -14,8 +14,8 @@ Path
 Build Cmd
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S cdc_acm samples/subsys/usb/cdc_acm -T sample.usb_device_next.cdc-acm
+    west build -p always -b dust-hpm6750 -S cdc_acm samples/subsys/usb/cdc_acm -T sample.usb_device_next.cdc-acm

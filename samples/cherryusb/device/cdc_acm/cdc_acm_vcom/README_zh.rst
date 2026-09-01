@@ -20,11 +20,11 @@ CDC ACM VCOM
 编译指令
 -----------
 
-- 以hpm6750evk2为例，在sdk_glue目录下执行如下指令
+- 以dust-hpm6750为例，在sdk_glue目录下执行如下指令
 
     .. code-block:: console
 
-        west build -p always -b hpm6750evk2 samples/cherryusb/device/cdc_acm/cdc_acm_vcom/
+        west build -p always -b dust-hpm6750 samples/cherryusb/device/cdc_acm/cdc_acm_vcom/
 
 运行现象
 ------------

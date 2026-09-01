@@ -84,7 +84,7 @@ Quick Start
 
     .. code-block:: bash
 
-        west build -b hpm6750evk2 samples/hello_world
+        west build -b dust-hpm6750 samples/hello_world
 
 Switching to Other Toolchains
 -----------------------------

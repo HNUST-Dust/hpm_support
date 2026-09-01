@@ -232,7 +232,7 @@ Docker Compose 提供了更便捷的容器管理方式，配置可持久化保�
     .. code-block:: console
 
         cd /home/zephyr/zephyr_space/zephyr
-        west build -p always -b hpm6750evk2 -S blinky samples/basic/blinky
+        west build -p always -b dust-hpm6750 -S blinky samples/basic/blinky
 
 #. 烧录到目标板（请先连接开发板）
 
@@ -255,7 +255,7 @@ Docker Compose 提供了更便捷的容器管理方式，配置可持久化保�
 
 常用开发板包括：
 
-- ``hpm6750evk2``
+- ``dust-hpm6750``
 - ``hpm6800evk``
 - ``hpm6200evk``
 - ``hpm6e00evk``

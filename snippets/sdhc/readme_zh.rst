@@ -17,8 +17,8 @@ SDHC
 命令行
 -----------
 
-As hpm6750evk2 for example:
+As dust-hpm6750 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S sdhc zephyr/tests/drivers/sdhc
+    west build -p always -b dust-hpm6750 -S sdhc zephyr/tests/drivers/sdhc

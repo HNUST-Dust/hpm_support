@@ -14,8 +14,8 @@ mass
 命令行
 ------------
 
-以hpm6750evk2为例:
+以dust-hpm6750为例:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S mass samples/subsys/usb/mass -T sample.usb_device_next.mass_ram_none
+    west build -p always -b dust-hpm6750 -S mass samples/subsys/usb/mass -T sample.usb_device_next.mass_ram_none

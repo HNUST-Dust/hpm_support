@@ -18,4 +18,4 @@ As hpm6800evk for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S video_mipi zephyr/samples/subsys/video/capture
+    west build -p always -b dust-hpm6750 -S video_mipi zephyr/samples/subsys/video/capture

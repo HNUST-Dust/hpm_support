@@ -19,6 +19,6 @@ CAN (Enable CAN-FD As Default)
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/api
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/timing
-    west build -p always -b hpm6750evk2 -S can tests/drivers/can/shell
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/api
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/timing
+    west build -p always -b dust-hpm6750 -S can tests/drivers/can/shell
