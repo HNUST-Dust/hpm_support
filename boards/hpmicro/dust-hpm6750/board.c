@@ -6,12 +6,30 @@
  */
 
 #include <zephyr/devicetree.h>
+#include <zephyr/init.h>
 #include <zephyr/sys/util.h>
 #include <hpm_common.h>
 #include <hpm_soc.h>
 #include "hpm_clock_drv.h"
 #include "hpm_femc_drv.h"
 #include "hpm_sdxc_drv.h"
+
+#if defined(CONFIG_USE_SEGGER_RTT)
+#include <SEGGER_RTT.h>
+
+/*
+ * Zephyr initializes SEGGER RTT in PRE_KERNEL_1 before the HPM6700 SoC init
+ * programs the nocache PMA.  Reinitialize it after all PRE_KERNEL_1 hooks so
+ * the control block is written through the final non-cacheable mapping.
+ */
+static int hpm_board_rtt_init(void)
+{
+    SEGGER_RTT_Init();
+    return 0;
+}
+
+SYS_INIT(hpm_board_rtt_init, PRE_KERNEL_2, 0);
+#endif
 
 static void hpm_board_sd_set_clock_divider(SDXC_Type *ptr, uint32_t divider)
 {

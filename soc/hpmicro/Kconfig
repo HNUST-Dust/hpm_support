@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 config SOC_FAMILY_HPM
 	select ZEPHYR_HPM_SDK_MODULE	
+	select HAS_SEGGER_RTT if ZEPHYR_SEGGER_MODULE
 
 if SOC_FAMILY_HPM
 

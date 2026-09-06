@@ -21,6 +21,7 @@
 		sw0 = &pbutn;
 		canbus = &can2;
 		sdhc0 = &sd0;
+		coredump-partition = &coredump_partition;
 		onboard-imu-cs = &onboard_imu_cs;
 		onboard-imu-drdy = &onboard_imu_drdy;
 	};
@@ -328,6 +329,11 @@
 			storage_partition: partition@363000 {
 				label = "storage";
 				reg = <0x363000 DT_SIZE_K(128)>;
+			};
+
+			coredump_partition: partition@383000 {
+				label = "coredump-partition";
+				reg = <0x383000 DT_SIZE_K(128)>;
 			};
 		};
 	};

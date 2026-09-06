@@ -867,7 +867,7 @@ static int uart_hpm_tx_abort(const struct device *dev)
 		return -ENOTSUP;
 	}
 
-	stat = dma_suspend(dev, data->dma_tx.channel);
+	stat = dma_suspend(data->dma_tx.dma_dev, data->dma_tx.channel);
 	if (stat) {
 		LOG_ERR("ERR dma suspend error.\r\n");
 		return stat;
@@ -878,7 +878,7 @@ static int uart_hpm_tx_abort(const struct device *dev)
 			.data.tx.buf = data->dma_txinfo.dst_addr,
 			.data.tx.len = len
 	};
-	stat = dma_stop(dev, data->dma_tx.channel);
+	stat = dma_stop(data->dma_tx.dma_dev, data->dma_tx.channel);
 	if (stat) {
 		LOG_ERR("ERR dma stop error.\r\n");
 		return stat;

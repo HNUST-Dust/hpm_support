@@ -3,7 +3,7 @@
 set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../../sdk_env/hpm_sdk/boards/openocd)
 set(HPM_TOOLS_RELATIVE ${ZEPHYR_BASE}/../../sdk_env/tools)
 set(HPM_MACOS_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../../usr/local)
-set(HPM_RTT_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../openocd-hpm-rtt/local-rtt)
+set(HPM_RTT_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../../openocd-hpm-rtt-v0.1.0/local-rtt)
 get_filename_component(OPENOCD_CONFIG_ABSOLUTE ${OPENOCD_CONFIG_RELATIVE} ABSOLUTE)
 get_filename_component(HPM_TOOLS_ABSOLUTE ${HPM_TOOLS_RELATIVE} ABSOLUTE)
 get_filename_component(HPM_MACOS_OPENOCD_ABSOLUTE ${HPM_MACOS_OPENOCD_RELATIVE} ABSOLUTE)

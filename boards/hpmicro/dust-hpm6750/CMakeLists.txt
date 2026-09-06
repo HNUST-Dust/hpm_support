@@ -8,7 +8,7 @@ zephyr_library_sources(board.c)
 # SEGGER RTT control block and its default buffers in the nocache region so the
 # running core and debugger observe the same offsets and payload bytes.
 zephyr_linker_sources_ifdef(
-  CONFIG_WBR_CONTROL_RTT_DIAGNOSTICS
+  CONFIG_USE_SEGGER_RTT
   NOCACHE_SECTION
   rtt_nocache.ld
 )

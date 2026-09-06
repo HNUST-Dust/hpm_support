@@ -14,6 +14,7 @@
 #include <hpm_common.h>
 #include <hpm_spi_drv.h>
 #include <hpm_clock_drv.h>
+#include <hpm_l1c_drv.h>
 
 #ifdef CONFIG_SPI_HPM_SPI_DMA
 #include <zephyr/drivers/dma.h>
@@ -41,7 +42,13 @@ struct spi_hpm_config {
 #define SPI_HPM_SPI_DMA_ERROR_FLAG		0x01
 #define SPI_HPM_SPI_DMA_RX_DONE_FLAG	0x02
 #define SPI_HPM_SPI_DMA_TX_DONE_FLAG	0x04
-#define SPI_HPM_SPI_DMA_DONE_FLAG		(SPI_HPM_SPI_DMA_RX_DONE_FLAG | SPI_HPM_SPI_DMA_TX_DONE_FLAG)
+#define SPI_HPM_SPI_END_DONE_FLAG	0x08
+
+enum spi_hpm_dma_state {
+	SPI_HPM_DMA_IDLE = 0,
+	SPI_HPM_DMA_WAIT_EVENTS,
+	SPI_HPM_DMA_COMPLETING,
+};
 
 struct stream {
 	const struct device *dma_dev;
@@ -62,6 +69,9 @@ struct spi_hpm_data {
 #endif
 #ifdef CONFIG_SPI_HPM_SPI_DMA
 	volatile uint32_t status_flags;
+	uint32_t required_dma_flags;
+	size_t dma_transfer_len;
+	volatile enum spi_hpm_dma_state dma_state;
 	struct stream dma_rx;
 	struct stream dma_tx;
 	/* dummy value used for transferring NOP when tx buf is null */
@@ -72,6 +82,9 @@ struct spi_hpm_data {
 };
 
 static void spi_hpm_master_transfer_callback(SPI_Type *base, void *userData);
+#ifdef CONFIG_SPI_HPM_SPI_DMA
+static void spi_hpm_dma_signal(const struct device *dev, uint32_t flag, int status);
+#endif
 
 static void spi_hpm_transfer_next_packet(const struct device *dev)
 {
@@ -178,9 +191,11 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 __attribute__((section(".isr")))static void spi_hpm_isr(const struct device *dev)
 {
 	const struct spi_hpm_config *config = dev->config;
-	struct spi_hpm_data *data = dev->data;
 	SPI_Type *base = config->base;
 	volatile uint32_t irq_status;
+#ifndef CONFIG_SPI_HPM_SPI_DMA
+	struct spi_hpm_data *data = dev->data;
+#endif
 #ifdef CONFIG_SPI_HPM_SPI_INTERRUPT
 	uint8_t data_len_in_bytes;
 	hpm_stat_t stat;
@@ -189,9 +204,23 @@ __attribute__((section(".isr")))static void spi_hpm_isr(const struct device *dev
 	irq_status = spi_get_interrupt_status(base);
 
 	if (irq_status & spi_end_int) {
-		spi_disable_interrupt(base, spi_end_int | spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int);
-		spi_hpm_master_transfer_callback(base, data);
+		spi_disable_interrupt(base, spi_end_int);
 		spi_clear_interrupt_status(base, spi_end_int);
+#ifdef CONFIG_SPI_HPM_SPI_DMA
+		/* END normally means the last frame has left the shifter. Confirm the
+		 * controller is actually idle before the state machine may release CS.
+		 */
+		if (spi_wait_for_idle_status(base) == status_success) {
+			spi_hpm_dma_signal(dev, SPI_HPM_SPI_END_DONE_FLAG, 0);
+		} else {
+			LOG_ERR("SPI remained active after END interrupt");
+			spi_hpm_dma_signal(dev, SPI_HPM_SPI_DMA_ERROR_FLAG, -ETIMEDOUT);
+		}
+#else
+		spi_disable_interrupt(base, spi_rx_fifo_threshold_int |
+				      spi_tx_fifo_threshold_int);
+		spi_hpm_master_transfer_callback(base, data);
+#endif
 #ifdef CONFIG_SPI_HPM_SPI_INTERRUPT
 	} else if (irq_status & (spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int)) {
 		data_len_in_bytes = spi_get_data_length_in_bytes(base);
@@ -302,29 +331,30 @@ static int spi_hpm_configure(const struct device *dev,
 /* This function is executed in the interrupt context */
 static void spi_hpm_dma_callback(const struct device *dev, void *arg, uint32_t channel, int status)
 {
-	/* arg directly holds the spi device */
 	struct spi_hpm_data *data = arg;
+	uint32_t flag = 0U;
 
 	if (status != 0) {
 		LOG_ERR("DMA callback error with channel %d.", channel);
-		data->status_flags |= SPI_HPM_SPI_DMA_ERROR_FLAG;
-	} else {
-		/* identify the origin of this callback */
-		if (channel == data->dma_tx.channel) {
-			/* this part of the transfer ends */
-			data->status_flags |= SPI_HPM_SPI_DMA_TX_DONE_FLAG;
-			LOG_DBG("DMA TX Block Complete");
-		} else if (channel == data->dma_rx.channel) {
-			/* this part of the transfer ends */
-			data->status_flags |= SPI_HPM_SPI_DMA_RX_DONE_FLAG;
-			LOG_DBG("DMA RX Block Complete");
-		} else {
-			LOG_ERR("DMA callback channel %d is not valid.",
-								channel);
-			data->status_flags |= SPI_HPM_SPI_DMA_ERROR_FLAG;
-		}
+		spi_hpm_dma_signal(data->dev, SPI_HPM_SPI_DMA_ERROR_FLAG, -EIO);
+		return;
 	}
-	spi_context_complete(&data->ctx, dev, 0);
+
+	if ((dev == data->dma_tx.dma_dev) &&
+	    (channel == data->dma_tx.channel)) {
+		flag = SPI_HPM_SPI_DMA_TX_DONE_FLAG;
+		LOG_DBG("DMA TX block complete");
+	} else if ((dev == data->dma_rx.dma_dev) &&
+		   (channel == data->dma_rx.channel)) {
+		flag = SPI_HPM_SPI_DMA_RX_DONE_FLAG;
+		LOG_DBG("DMA RX block complete");
+	} else {
+		LOG_ERR("DMA callback channel %d is not valid.", channel);
+		spi_hpm_dma_signal(data->dev, SPI_HPM_SPI_DMA_ERROR_FLAG, -EIO);
+		return;
+	}
+
+	spi_hpm_dma_signal(data->dev, flag, 0);
 }
 
 static int spi_hpm_dma_tx_load(const struct device *dev, const uint8_t *buf, size_t len)
@@ -416,47 +446,251 @@ static int spi_hpm_dma_rx_load(const struct device *dev, uint8_t *buf, size_t le
 	return dma_config(data->dma_rx.dma_dev, data->dma_rx.channel, &stream->dma_cfg);
 }
 
-static int wait_dma_rx_tx_done(const struct device *dev)
+static void spi_hpm_dma_cache_prepare(const uint8_t *tx_buf, size_t tx_len,
+				      uint8_t *rx_buf, size_t rx_len)
 {
-	struct spi_hpm_data *data = dev->data;
-	int ret = -1;
+	uint32_t aligned_start;
+	uint32_t aligned_end;
 
-	while (1) {
-		ret = spi_context_wait_for_completion(&data->ctx);
-		if (ret) {
-			LOG_DBG("Timed out waiting for SPI context to complete");
-			return ret;
-		}
-		if (data->status_flags & SPI_HPM_SPI_DMA_ERROR_FLAG) {
-			return -EIO;
-		}
+	if (!l1c_dc_is_enabled()) {
+		return;
+	}
 
-		if ((data->status_flags & SPI_HPM_SPI_DMA_DONE_FLAG)) {
-			LOG_DBG("DMA block completed");
-			return 0;
-		}
+	if ((tx_buf != NULL) && (tx_len > 0U)) {
+		aligned_start = HPM_L1C_CACHELINE_ALIGN_DOWN((uint32_t)tx_buf);
+		aligned_end = HPM_L1C_CACHELINE_ALIGN_UP((uint32_t)tx_buf + tx_len);
+		l1c_dc_writeback(aligned_start, aligned_end - aligned_start);
+	}
+
+	if ((rx_buf != NULL) && (rx_len > 0U)) {
+		aligned_start = HPM_L1C_CACHELINE_ALIGN_DOWN((uint32_t)rx_buf);
+		aligned_end = HPM_L1C_CACHELINE_ALIGN_UP((uint32_t)rx_buf + rx_len);
+		/* Preserve unrelated dirty data sharing the boundary cache lines. */
+		l1c_dc_flush(aligned_start, aligned_end - aligned_start);
 	}
 }
 
-static int transceive_dma(const struct device *dev,
-		      const struct spi_config *spi_cfg,
-		      const struct spi_buf_set *tx_bufs,
-		      const struct spi_buf_set *rx_bufs,
-		      bool asynchronous,
-			  spi_callback_t cb,
-			  void *userdata)
+static void spi_hpm_dma_cache_complete(uint8_t *rx_buf, size_t rx_len)
+{
+	uint32_t aligned_start;
+	uint32_t aligned_end;
+
+	if (!l1c_dc_is_enabled() || (rx_buf == NULL) || (rx_len == 0U)) {
+		return;
+	}
+
+	aligned_start = HPM_L1C_CACHELINE_ALIGN_DOWN((uint32_t)rx_buf);
+	aligned_end = HPM_L1C_CACHELINE_ALIGN_UP((uint32_t)rx_buf + rx_len);
+	/* Drop any cache lines that could hide bytes just written by DMA.  The
+	 * pre-transfer flush has already preserved dirty boundary-line data.
+	 */
+	l1c_dc_invalidate(aligned_start, aligned_end - aligned_start);
+}
+
+static void spi_hpm_dma_quiesce(const struct device *dev)
 {
 	const struct spi_hpm_config *config = dev->config;
 	struct spi_hpm_data *data = dev->data;
 	SPI_Type *base = config->base;
-	int ret;
-	size_t tx_dma_size, rx_dma_size;
-	volatile uint32_t status;
-	spi_control_config_t control_config;
 
-	/* set SPI control config for master */
+	spi_disable_interrupt(base, spi_end_int);
+	spi_disable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable);
+	(void)dma_stop(data->dma_tx.dma_dev, data->dma_tx.channel);
+	(void)dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
+	if (spi_wait_for_idle_status(base) != status_success) {
+		/* A failed DMA may leave the SPI engine waiting for data. Reset the
+		 * controller before releasing CS so no clock edge can occur after
+		 * the failed transaction is reported to the caller.
+		 */
+		spi_reset(base);
+		if ((spi_poll_reset_complete(base, spi_reset_all, 5000U) !=
+		     status_success) ||
+		    (spi_wait_for_idle_status(base) != status_success)) {
+			LOG_ERR("failed to quiesce SPI after DMA error");
+		}
+	}
+}
+
+static void spi_hpm_dma_complete_transfer(const struct device *dev, int status)
+{
+	const struct spi_hpm_config *config = dev->config;
+	struct spi_hpm_data *data = dev->data;
+	SPI_Type *base = config->base;
+
+	spi_disable_interrupt(base, spi_end_int);
+	spi_disable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable);
+
+	if (status != 0) {
+		spi_hpm_dma_quiesce(dev);
+	}
+	data->dma_state = SPI_HPM_DMA_IDLE;
+
+	spi_context_cs_control(&data->ctx, false);
+	spi_context_complete(&data->ctx, dev, status);
+}
+
+static int spi_hpm_dma_start_next(const struct device *dev)
+{
+	const struct spi_hpm_config *config = dev->config;
+	struct spi_hpm_data *data = dev->data;
+	SPI_Type *base = config->base;
+	spi_control_config_t control_config;
+	const uint8_t *tx_buf = data->ctx.tx_buf;
+	uint8_t *rx_buf = data->ctx.rx_buf;
+	size_t tx_size = MIN(data->ctx.tx_len, SPI_SOC_TRANSFER_COUNT_MAX);
+	size_t rx_size = MIN(data->ctx.rx_len, SPI_SOC_TRANSFER_COUNT_MAX);
+	uint32_t required_flags = 0U;
+	unsigned int key;
+	int ret;
+
 	spi_master_get_default_control_config(&control_config);
 	control_config.slave_config.slave_data_only = false;
+
+	if (tx_size == 0U) {
+		control_config.common_config.trans_mode = spi_trans_read_only;
+		control_config.common_config.rx_dma_enable = true;
+		required_flags = SPI_HPM_SPI_DMA_RX_DONE_FLAG;
+	} else if (rx_size == 0U) {
+		control_config.common_config.trans_mode = spi_trans_write_only;
+		control_config.common_config.tx_dma_enable = true;
+		required_flags = SPI_HPM_SPI_DMA_TX_DONE_FLAG;
+	} else {
+		tx_size = MIN(tx_size, rx_size);
+		rx_size = tx_size;
+		control_config.common_config.trans_mode = spi_trans_write_read_together;
+		control_config.common_config.tx_dma_enable = true;
+		control_config.common_config.rx_dma_enable = true;
+		required_flags = SPI_HPM_SPI_DMA_TX_DONE_FLAG |
+				 SPI_HPM_SPI_DMA_RX_DONE_FLAG;
+	}
+
+	data->dma_transfer_len = MAX(tx_size, rx_size);
+	spi_disable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable);
+	spi_clear_interrupt_status(base, spi_end_int);
+
+	spi_hpm_dma_cache_prepare(tx_buf, tx_size, rx_buf, rx_size);
+
+	if (rx_size > 0U) {
+		ret = spi_hpm_dma_rx_load(dev, rx_buf, rx_size);
+		if (ret != 0) {
+			return ret;
+		}
+		ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+		if (ret != 0) {
+			goto quiesce;
+		}
+	}
+
+	if (tx_size > 0U) {
+		ret = spi_hpm_dma_tx_load(dev, tx_buf, tx_size);
+		if (ret != 0) {
+			goto quiesce;
+		}
+		ret = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
+		if (ret != 0) {
+			goto quiesce;
+		}
+	}
+
+	key = irq_lock();
+	data->status_flags = 0U;
+	data->required_dma_flags = required_flags;
+	data->dma_state = SPI_HPM_DMA_WAIT_EVENTS;
+	irq_unlock(key);
+
+	spi_enable_interrupt(base, spi_end_int);
+	if (spi_setup_dma_transfer(base, &control_config, NULL, NULL,
+				   tx_size, rx_size) != status_success) {
+		ret = -EIO;
+		goto deactivate;
+	}
+
+	return 0;
+
+deactivate:
+	key = irq_lock();
+	data->dma_state = SPI_HPM_DMA_IDLE;
+	irq_unlock(key);
+quiesce:
+	spi_hpm_dma_quiesce(dev);
+	return ret;
+}
+
+static void spi_hpm_dma_chunk_complete(const struct device *dev)
+{
+	const struct spi_hpm_config *config = dev->config;
+	struct spi_hpm_data *data = dev->data;
+	SPI_Type *base = config->base;
+	const bool final_chunk =
+		(spi_context_total_tx_len(&data->ctx) <= data->dma_transfer_len) &&
+		(spi_context_total_rx_len(&data->ctx) <= data->dma_transfer_len);
+	int ret;
+
+	spi_disable_interrupt(base, spi_end_int);
+	spi_disable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable);
+	spi_hpm_dma_cache_complete(data->ctx.rx_buf,
+				   MIN(data->ctx.rx_len, data->dma_transfer_len));
+	if (final_chunk) {
+		/* SPI END has already been observed and SPIACTIVE is clear. Release
+		 * GPIO CS before mutating the public transfer context and before the
+		 * user callback can run.
+		 */
+		spi_context_cs_control(&data->ctx, false);
+	}
+	spi_context_update_tx(&data->ctx, 1, data->dma_transfer_len);
+	spi_context_update_rx(&data->ctx, 1, data->dma_transfer_len);
+
+	if ((data->ctx.tx_len == 0U) && (data->ctx.rx_len == 0U)) {
+		spi_hpm_dma_complete_transfer(dev, 0);
+		return;
+	}
+
+	ret = spi_hpm_dma_start_next(dev);
+	if (ret != 0) {
+		spi_hpm_dma_complete_transfer(dev, ret);
+	}
+}
+
+static void spi_hpm_dma_signal(const struct device *dev, uint32_t flag, int status)
+{
+	struct spi_hpm_data *data = dev->data;
+	bool complete = false;
+	unsigned int key;
+
+	key = irq_lock();
+	if (data->dma_state == SPI_HPM_DMA_WAIT_EVENTS) {
+		data->status_flags |= flag;
+		if ((status != 0) ||
+		    (((data->status_flags & data->required_dma_flags) ==
+		      data->required_dma_flags) &&
+		     ((data->status_flags & SPI_HPM_SPI_END_DONE_FLAG) != 0U))) {
+			data->dma_state = SPI_HPM_DMA_COMPLETING;
+			complete = true;
+		}
+	}
+	irq_unlock(key);
+
+	if (!complete) {
+		return;
+	}
+
+	if (status != 0) {
+		spi_hpm_dma_complete_transfer(dev, status);
+	} else {
+		spi_hpm_dma_chunk_complete(dev);
+	}
+}
+
+static int transceive_dma(const struct device *dev,
+			  const struct spi_config *spi_cfg,
+			  const struct spi_buf_set *tx_bufs,
+			  const struct spi_buf_set *rx_bufs,
+			  bool asynchronous,
+			  spi_callback_t cb,
+			  void *userdata)
+{
+	struct spi_hpm_data *data = dev->data;
+	int ret;
 
 	spi_context_lock(&data->ctx, asynchronous, cb, userdata, spi_cfg);
 
@@ -466,134 +700,35 @@ static int transceive_dma(const struct device *dev,
 	}
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, 1);
-
-	spi_context_cs_control(&data->ctx, true);
-
-	/* Send each spi buf via DMA, updating context as DMA completes */
-	while (data->ctx.rx_len > 0 || data->ctx.tx_len > 0) {
-		/* Clear status flags */
-		data->status_flags = 0U;
-
-		tx_dma_size = MIN(data->ctx.tx_len, SPI_SOC_TRANSFER_COUNT_MAX);
-		rx_dma_size = MIN(data->ctx.rx_len, SPI_SOC_TRANSFER_COUNT_MAX);
-
-		if (tx_dma_size == 0) {
-			ret = spi_hpm_dma_rx_load(dev, data->ctx.rx_buf, rx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			control_config.common_config.trans_mode = spi_trans_read_only;
-			control_config.common_config.rx_dma_enable = true;
-			ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-			
-		} else if (rx_dma_size == 0) {
-			ret = spi_hpm_dma_tx_load(dev, data->ctx.tx_buf, tx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			control_config.common_config.trans_mode = spi_trans_write_only;
-			control_config.common_config.tx_dma_enable = true;
-			ret = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-		} else if (tx_dma_size == rx_dma_size) {
-			ret = spi_hpm_dma_rx_load(dev, data->ctx.rx_buf, rx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = spi_hpm_dma_tx_load(dev, data->ctx.tx_buf, tx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			control_config.common_config.trans_mode = spi_trans_write_read_together;
-			control_config.common_config.tx_dma_enable = true;
-			control_config.common_config.rx_dma_enable = true;
-			ret = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-		} else if (tx_dma_size > rx_dma_size) {
-			tx_dma_size = rx_dma_size;
-			ret = spi_hpm_dma_rx_load(dev, data->ctx.rx_buf, rx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = spi_hpm_dma_tx_load(dev, data->ctx.tx_buf, tx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			control_config.common_config.trans_mode = spi_trans_write_read_together;
-			control_config.common_config.tx_dma_enable = true;
-			control_config.common_config.rx_dma_enable = true;
-			ret = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-		} else {
-			rx_dma_size = tx_dma_size;
-			ret = spi_hpm_dma_rx_load(dev, data->ctx.rx_buf, rx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = spi_hpm_dma_tx_load(dev, data->ctx.tx_buf, tx_dma_size);
-			if (ret != 0) {
-				goto out;
-			}
-			control_config.common_config.trans_mode = spi_trans_write_read_together;
-			control_config.common_config.tx_dma_enable = true;
-			control_config.common_config.rx_dma_enable = true;
-			ret = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
-			if (ret != 0) {
-				goto out;
-			}
-			ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
-			if (ret != 0) {
-				goto out;
-			}
+	if ((data->ctx.tx_len == 0U) && (data->ctx.rx_len == 0U)) {
+		spi_context_complete(&data->ctx, dev, 0);
+		if (asynchronous) {
+			return 0;
 		}
-
-		if (status_success != spi_setup_dma_transfer(base, &control_config,
-                                NULL, NULL, tx_dma_size, rx_dma_size)) {
-			LOG_ERR("SPI setup DMA Transfer failed");
-			goto out;
-		}
-
-		/* Enable DMA Requests, already enabled in spi_setup_dma_transfer */
-		/* spi_enable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable); */
-
-		/* Wait for DMA to finish */
-		ret = wait_dma_rx_tx_done(dev);
-		if (ret != 0) {
-			goto out;
-		}
-
-		/* wait until module is idle */
-		do {
-			status = base->STATUS;
-		} while(status & SPI_STATUS_SPIACTIVE_MASK);
-
-
-		/* Disable DMA */
-		spi_disable_dma(base, spi_tx_dma_enable | spi_rx_dma_enable);
-
-		/* Update SPI contexts with amount of data we just sent */
-		spi_context_update_tx(&data->ctx, 1, tx_dma_size);
-		spi_context_update_rx(&data->ctx, 1, rx_dma_size);
+		ret = spi_context_wait_for_completion(&data->ctx);
+		goto out;
 	}
 
-	spi_context_cs_control(&data->ctx, false);
+	spi_context_cs_control(&data->ctx, true);
+	ret = spi_hpm_dma_start_next(dev);
+	if (ret != 0) {
+		spi_context_cs_control(&data->ctx, false);
+		goto out;
+	}
+
+	if (asynchronous) {
+		return 0;
+	}
+
+	ret = spi_context_wait_for_completion(&data->ctx);
+	if (ret != 0) {
+		unsigned int key = irq_lock();
+
+		data->dma_state = SPI_HPM_DMA_IDLE;
+		irq_unlock(key);
+		spi_hpm_dma_quiesce(dev);
+		spi_context_cs_control(&data->ctx, false);
+	}
 
 out:
 	spi_context_release(&data->ctx, ret);
@@ -661,9 +796,48 @@ static int spi_hpm_transceive_async(const struct device *dev,
 #endif /* CONFIG_SPI_ASYNC */
 
 static int spi_hpm_release(const struct device *dev,
-			    const struct spi_config *spi_cfg)
+				    const struct spi_config *spi_cfg)
 {
 	struct spi_hpm_data *data = dev->data;
+	ARG_UNUSED(spi_cfg);
+
+#ifdef CONFIG_SPI_HPM_SPI_DMA
+	bool abort_transfer = false;
+	bool completion_in_progress = false;
+	unsigned int key = irq_lock();
+
+	if (data->dma_state == SPI_HPM_DMA_WAIT_EVENTS) {
+		/* Prevent late TX/RX/END interrupts from completing the same context
+		 * after the abort path has released it.
+		 */
+		data->dma_state = SPI_HPM_DMA_COMPLETING;
+		abort_transfer = true;
+	} else if (data->dma_state == SPI_HPM_DMA_COMPLETING) {
+		completion_in_progress = true;
+	}
+	irq_unlock(key);
+
+	if (abort_transfer) {
+		spi_hpm_dma_quiesce(dev);
+		key = irq_lock();
+		data->status_flags = 0U;
+		data->dma_state = SPI_HPM_DMA_IDLE;
+		irq_unlock(key);
+		spi_context_cs_control(&data->ctx, false);
+		/* Complete the asynchronous operation exactly once.  This invokes the
+		 * client callback with cancellation and releases the context lock.
+		 */
+		spi_context_complete(&data->ctx, dev, -ECANCELED);
+		return 0;
+	}
+	if (completion_in_progress) {
+		/* The ISR has already claimed the transaction and will invoke the
+		 * callback exactly once.  Do not race it by completing or unlocking the
+		 * same context here.
+		 */
+		return 0;
+	}
+#endif
 
 	spi_context_unlock_unconditionally(&data->ctx);
 
@@ -676,7 +850,7 @@ static int spi_hpm_init(const struct device *dev)
 	const struct spi_hpm_config *config = dev->config;
 	struct spi_hpm_data *data = dev->data;
 
-#ifdef CONFIG_SPI_HPM_SPI_INTERRUPT
+#if defined(CONFIG_SPI_HPM_SPI_INTERRUPT) || defined(CONFIG_SPI_HPM_SPI_DMA)
 	config->irq_config_func(dev);
 #endif
 
