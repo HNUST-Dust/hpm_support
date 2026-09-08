@@ -55,7 +55,15 @@ static int hpmicro_pwm_v1_set_cycles(const struct device *dev, uint32_t channel,
 	HPM_PWM_BASE_TYPE *pwm_base = config->base;
 	uint32_t rld = 0, xrld = 0, prld = 0;
 	uint32_t rld_cmp = 0, xrld_cmp = 0;
-	uint16_t i, j;
+	if (channel >= PWM_SOC_PWM_MAX_COUNT || period_cycles == 0U ||
+	    pulse_cycles > period_cycles) {
+		return -EINVAL;
+	}
+	/* Reserve a representable compare beyond reload for constant inactive
+	 * output. Extended-counter periods need a separate validated encoding. */
+	if (period_cycles >= 0xffffffU) {
+		return -ENOTSUP;
+	}
 
 	pwm_get_default_pwm_config(pwm_base, &pwm_config);
 	if (flags == PWM_POLARITY_INVERTED) {
@@ -82,44 +90,27 @@ static int hpmicro_pwm_v1_set_cycles(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	if (period_cycles >  0xffffff) {
-		for (i = 1; i <= 16; i++) {
-			if ((period_cycles / (i + 1)) <= 0xffffff) {
-				rld = period_cycles / (i + 1);
-				xrld = i;
-				prld = (xrld << 24) | rld;
-				for (j = 0; j <= 16; j++) {
-					if (((period_cycles - pulse_cycles) / (j + 1)) <= 0xffffff) {
-						rld_cmp = (period_cycles - pulse_cycles) / (j + 1);
-						xrld_cmp = j;
-						break;
-					} else if (j >= 16) {
-						return -ENOTSUP;
-					}
-				}
-				break;
-			} else if (i >= 16) {
-				return -ENOTSUP;
-			}
-		}
-	} else {
-		rld = period_cycles;
-		xrld = 0;
-		prld = period_cycles;
-		rld_cmp = period_cycles - pulse_cycles;
-		xrld_cmp = 0;
-	}
+	rld = period_cycles;
+	prld = period_cycles;
+	/* Compare output starts low, rises on match, clears at reload.
+	 * SDK uses a compare beyond reload for constant inactive output. */
+	rld_cmp = pulse_cycles == 0U ? rld + 1U : period_cycles - pulse_cycles;
 
 	if (prld != ((PWM_RLD_XRLD_GET(pwm_base->RLD) << 24) | PWM_RLD_RLD_GET(pwm_base->RLD))) {
 
-		pwm_config.enable_output = true;
-		pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
 		pwm_set_reload(pwm_base, xrld, rld);
 		pwm_set_start_count(pwm_base, 0, 0);
+	}
+
+	/* Channel setup and polarity must also apply when the period is unchanged. */
+	{
+		pwm_shadow_register_unlock(pwm_base);
+		pwm_config.enable_output = true;
+		pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
 
 		cmp_config[0].enable_ex_cmp  = true;
 		cmp_config[0].mode = pwm_cmp_mode_output_compare;
-		cmp_config[0].cmp = rld + 1;
+		cmp_config[0].cmp = rld_cmp;
 		cmp_config[0].ex_cmp = xrld;
 		cmp_config[0].update_trigger = pwm_shadow_register_update_on_modify;
 
@@ -199,7 +190,9 @@ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
 		rld = period_cycles;
 		xrld = 0;
 		prld = period_cycles;
-		rld_cmp = period_cycles - pulse_cycles;
+		/* Edge-aligned output: rising edge at 0, falling edge at the
+		 * requested high-time. */
+		rld_cmp = pulse_cycles;
 		xrld_cmp = 0;
 	}
 

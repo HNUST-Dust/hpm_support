@@ -46,8 +46,8 @@ struct gpio_hpm_config {
 #endif /* CONFIG_PINCTRL */
 };
 
-/* max buffer = 256*512 + 128 adma desc; and satisfy 2^x non-cache buffer size */
-#define DUMMY_BUF_LEN_BYTES (0x40000U - 128U)
+/* Bounce at most the controller's intended 256 conventional SD sectors. */
+#define DUMMY_BUF_LEN_BYTES (256U * 512U)
 #define CONFIG_HPM_SDHC_DMA_BUFFER_SIZE 128
 __attribute__((__section__(".nocache"))) static uint32_t dummy_buffer[DUMMY_BUF_LEN_BYTES / 4U];
 extern uint32_t hpm_board_sd_configure_clock(SDXC_Type *ptr, uint32_t freq, bool need_inverse);
@@ -134,49 +134,8 @@ static void hpm_sdhc_apply_hpm6750_sdxc0_pad_fixup(const struct device *dev)
     HPM_IOC->PAD[IOC_PAD_PE27].PAD_CTL |= BIT(3);
     HPM_IOC->PAD[IOC_PAD_PE28].PAD_CTL |= BIT(3);
 
-    /*
-     * Temporary mux cross-check: expose the alternate SDXC0 CMD/CLK pins
-     * too, so the board can be probed for an internal route mismatch.
-     */
-    HPM_IOC->PAD[IOC_PAD_PE10].FUNC_CTL = IOC_PE10_FUNC_CTL_SDC0_CMD |
-        IOC_PAD_FUNC_CTL_LOOP_BACK_MASK;
-    HPM_IOC->PAD[IOC_PAD_PE10].PAD_CTL = IOC_PAD_PAD_CTL_PE_SET(1) |
-        IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_DS_SET(6) | BIT(3);
-    HPM_IOC->PAD[IOC_PAD_PE11].FUNC_CTL = IOC_PE11_FUNC_CTL_SDC0_CLK |
-        IOC_PAD_FUNC_CTL_LOOP_BACK_MASK;
-    HPM_IOC->PAD[IOC_PAD_PE11].PAD_CTL = IOC_PAD_PAD_CTL_PE_SET(1) |
-        IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_DS_SET(7) | BIT(3);
 }
 
-static void hpm_sdhc_gpio_scope_probe(const struct device *dev)
-{
-    const struct hpm_sdhc_config *cfg = dev->config;
-    const uint32_t gpioe = GPIO_GET_PORT_INDEX(IOC_PAD_PE27);
-
-    if (cfg->base != HPM_SDXC0) {
-        return;
-    }
-
-    LOG_WRN("SDXC0 scope probe: toggling PE27/CLK and PE22/CMD as GPIO for 2s");
-
-    HPM_IOC->PAD[IOC_PAD_PE27].FUNC_CTL = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
-    HPM_IOC->PAD[IOC_PAD_PE27].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(7);
-    HPM_IOC->PAD[IOC_PAD_PE22].FUNC_CTL = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
-    HPM_IOC->PAD[IOC_PAD_PE22].PAD_CTL = IOC_PAD_PAD_CTL_DS_SET(7);
-
-    gpio_set_pin_output(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE27));
-    gpio_set_pin_output(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE22));
-
-    for (uint32_t i = 0; i < 2000U; i++) {
-        gpio_toggle_pin(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE27));
-        gpio_toggle_pin(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE22));
-        k_busy_wait(500U);
-    }
-
-    gpio_write_pin(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE27), 0);
-    gpio_write_pin(HPM_GPIO0, gpioe, GPIO_GET_PIN_INDEX(IOC_PAD_PE22), 1);
-    LOG_WRN("SDXC0 scope probe done; SDHC pinctrl will be applied next");
-}
 #endif
 
 static void hpm_sdhc_dump_hw_state(const struct device *dev, const char *tag)
@@ -204,12 +163,6 @@ static void hpm_sdhc_dump_hw_state(const struct device *dev, const char *tag)
         LOG_DBG("%s: SDXC0 IOC PE27/CLK func=0x%08x pad=0x%08x",
             tag, HPM_IOC->PAD[IOC_PAD_PE27].FUNC_CTL,
             HPM_IOC->PAD[IOC_PAD_PE27].PAD_CTL);
-        LOG_DBG("%s: SDXC0 ALT IOC PE10/CMD func=0x%08x pad=0x%08x",
-            tag, HPM_IOC->PAD[IOC_PAD_PE10].FUNC_CTL,
-            HPM_IOC->PAD[IOC_PAD_PE10].PAD_CTL);
-        LOG_DBG("%s: SDXC0 ALT IOC PE11/CLK func=0x%08x pad=0x%08x",
-            tag, HPM_IOC->PAD[IOC_PAD_PE11].FUNC_CTL,
-            HPM_IOC->PAD[IOC_PAD_PE11].PAD_CTL);
     }
 #endif
 }
@@ -813,7 +766,6 @@ static hpm_stat_t hpm_sdhc_transfer(const struct device *dev, struct sdhc_comman
     }
 #endif
 
-    memset(dummy_buffer, 0, DUMMY_BUF_LEN_BYTES);
     memset(host_cmd, 0, sizeof(*host_cmd));
 
     host_cmd->cmd_index = cmd->opcode;
@@ -827,6 +779,15 @@ static hpm_stat_t hpm_sdhc_transfer(const struct device *dev, struct sdhc_comman
 
     if (data) {
         sdxc_data_t *host_data = &dev_data->xfer_data.data;
+        const size_t transfer_size = (size_t)data->block_size * data->blocks;
+
+        if ((data->blocks != 0U) &&
+            ((transfer_size / data->blocks) != data->block_size ||
+             transfer_size > sizeof(dummy_buffer))) {
+            k_mutex_unlock(&dev_data->access_mutex);
+            return -EINVAL;
+        }
+
         memset(host_data, 0, sizeof(*host_data));
         host_data->block_size = data->block_size;
         host_data->block_cnt = data->blocks;
@@ -896,8 +857,17 @@ static hpm_stat_t hpm_sdhc_transfer(const struct device *dev, struct sdhc_comman
             memcpy(cmd->response, host_content->command->response, sizeof(cmd->response));
             break;
         } else if (hpm_sdhc_is_timeout_status(status)) {
+            LOG_ERR("SD transfer failed: cmd=%u arg=0x%08x blocks=%u block_size=%u status=%d int=0x%08x",
+                cmd->opcode, cmd->arg, data ? data->blocks : 0U,
+                data ? data->block_size : 0U, (int)status,
+                sdxc_get_interrupt_status(((const struct hpm_sdhc_config *)dev->config)->base));
             break;
         } else if ((status >= status_sdxc_busy) && (status <= status_sdxc_tuning_failed)) {
+            LOG_ERR("SD transfer retry: cmd=%u arg=0x%08x blocks=%u block_size=%u status=%d int=0x%08x retries=%d",
+                cmd->opcode, cmd->arg, data ? data->blocks : 0U,
+                data ? data->block_size : 0U, (int)status,
+                sdxc_get_interrupt_status(((const struct hpm_sdhc_config *)dev->config)->base),
+                retries);
             hpm_stat_t error_recovery_status = hpm_sdhc_error_recovery(dev);
             if (error_recovery_status != status_success) {
                 k_mutex_unlock(&dev_data->access_mutex);
@@ -1147,10 +1117,6 @@ static int hpm_sdhc_init(const struct device *dev)
     struct hpm_sdhc_data *data = dev->data;
     SDXC_Type *base = cfg->base;
     int ret;
-
-#if defined(CONFIG_SOC_SERIES_HPM6700)
-    hpm_sdhc_gpio_scope_probe(dev);
-#endif
 
     ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
     if (ret) {

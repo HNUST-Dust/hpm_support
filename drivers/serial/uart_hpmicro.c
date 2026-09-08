@@ -614,7 +614,7 @@ static uint32_t uart_hpm_async_tx_flush(const struct device *dev)
 	struct dma_status stat;
 	int ret;
 
-	ret = dma_get_status(dev, data->dma_tx.channel, &stat);
+	ret = dma_get_status(data->dma_tx.dma_dev, data->dma_tx.channel, &stat);
 	if (ret) {
 		LOG_ERR("ERR dma get status.\r\n");
 	}
