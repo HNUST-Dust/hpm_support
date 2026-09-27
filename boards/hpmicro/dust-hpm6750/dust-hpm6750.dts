@@ -9,6 +9,7 @@
 #include "dust-hpm6750-pinctrl.dtsi"
 #include <zephyr/dt-bindings/display/panel.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
 	model = "Dust HPM6750";
@@ -24,6 +25,7 @@
 		coredump-partition = &coredump_partition;
 		onboard-imu-cs = &onboard_imu_cs;
 		onboard-imu-drdy = &onboard_imu_drdy;
+		onboard-imu-heater = &onboard_imu_heater;
 	};
 
 	chosen {
@@ -37,6 +39,9 @@
 		zephyr,flash-controller = &xpi0;
 		zephyr,canbus = &can2;
 		wbr-control,remote-input-uart = &uart10;
+		wbr-control,oscilloscope-uart = &uart0;
+		wbr-control,hi91-uart = &uart2;
+		wbr-control,onboard-imu-spi = &spi2;
 	};
 
 	dram: memory@40000000 {
@@ -78,6 +83,14 @@
 		/* ICM42688P-HXY INT1: active-high data-ready input. */
 		onboard_imu_drdy: onboard_imu_drdy {
 			gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	pwm_outputs {
+		compatible = "pwm-leds";
+		onboard_imu_heater: onboard_imu_heater {
+			pwms = <&pwm1 0 PWM_KHZ(20) PWM_POLARITY_NORMAL>;
+			label = "Onboard IMU heater MOSFET";
 		};
 	};
 
@@ -213,6 +226,14 @@
 &pwm0 {
 	status = "okay";
 	pinctrl-0 = <&pinmux_pwm0>;
+	pinctrl-names = "default";
+	period-init = <100>;
+	dead-zone-in-half-cycle = <0>;
+};
+
+&pwm1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_pwm1_imu_heater>;
 	pinctrl-names = "default";
 	period-init = <100>;
 	dead-zone-in-half-cycle = <0>;
