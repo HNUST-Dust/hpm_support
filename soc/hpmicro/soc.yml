@@ -31,4 +31,6 @@ family:
     - name: hpm6e50
     - name: hpm6e80
     - name: hpm6e8y
-
+  - name: hpm5e00
+    socs:
+    - name: hpm5e31
