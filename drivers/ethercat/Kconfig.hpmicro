@@ -1,0 +1,24 @@
+# HPMicro integrated EtherCAT slave controller
+
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+config ETHERCAT_HPMICRO
+	bool "HPMicro integrated EtherCAT slave controller"
+	default y
+	depends on DT_HAS_HPMICRO_HPM_ESC_ENABLED
+	select HAS_HPMSDK_ESC
+	select PINCTRL
+	help
+	  Enables the integrated EtherCAT Slave Controller (ESC) found on
+	  HPM5E3x devices. The application or an EtherCAT slave stack registers
+	  callbacks for the PDI, SYNC0, SYNC1 and reset interrupts.
+
+config ETHERCAT_HPMICRO_INIT_PRIORITY
+	int "HPMicro EtherCAT initialization priority"
+	default 80
+	depends on ETHERCAT_HPMICRO
+	help
+	  Device initialization priority. The ESC is prepared during device
+	  initialization and started explicitly after callbacks and EEPROM
+	  storage have been registered.

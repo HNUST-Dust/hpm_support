@@ -1,0 +1,73 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro integrated EtherCAT slave controller
+
+compatible: "hpmicro,hpm-esc"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+    description: PDI, SYNC0, SYNC1 and reset interrupts, in that order
+
+  interrupt-names:
+    required: true
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
+
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: Active-level-aware reset signal shared by the EtherCAT PHYs
+
+  phy-address-offset:
+    type: int
+    default: 1
+    description: Offset added by the ESC to PHY management addresses
+
+  phy-addresses:
+    type: array
+    required: true
+    description: PHY addresses for enabled ports, before phy-address-offset
+
+  nmii-link-ctrl-indices:
+    type: array
+    required: true
+    description: ESC CTRL pin indices carrying NMII link signals for enabled ports
+
+  nmii-link-inverted:
+    type: array
+    required: true
+    description: One integer per enabled port; nonzero means active-low link input
+
+  nmii-link-from-io-mask:
+    type: int
+    default: 7
+    description: Bit mask selecting ports whose link state comes from an ESC CTRL pin
+
+  eeprom-emulation:
+    type: boolean
+    description: Use application-provided EEPROM emulation callbacks
+
+  eeprom-read-size:
+    type: int
+    default: 4
+    enum: [4, 8]
+    description: Number of bytes returned for an emulated EEPROM read command
+
+  eeprom-size-over-16kbit:
+    type: boolean
+    description: External EEPROM capacity is greater than 16 Kbit
+
+  configure-jl1111:
+    type: boolean
+    description: Apply the JL1111/JL1101 PHY setup used by the HPM5E00EVK

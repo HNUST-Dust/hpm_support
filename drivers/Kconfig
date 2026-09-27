@@ -19,5 +19,6 @@ rsource "sdhc/Kconfig.hpmicro"
 rsource "usb/udc/Kconfig.hpmicro"
 rsource "usb/cherryusb/Kconfig.hpmicro"
 rsource "ethernet/Kconfig.hpmicro"
+rsource "ethercat/Kconfig.hpmicro"
 rsource "flash/Kconfig.hpmicro"
 endmenu

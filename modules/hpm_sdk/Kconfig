@@ -66,6 +66,8 @@ config HAS_HPMSDK_JPEG
 	bool
 config HAS_HPMSDK_ENET
 	bool
+config HAS_HPMSDK_ESC
+	bool
 config HAS_HPMSDK_SDXC
 	bool
 config HAS_HPMSDK_ADC12
