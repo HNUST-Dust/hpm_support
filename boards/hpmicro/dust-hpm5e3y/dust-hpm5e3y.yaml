@@ -1,0 +1,20 @@
+identifier: dust-hpm5e3y
+name: Dust HPM5E3Y EtherCAT Controller
+type: mcu
+arch: riscv32
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 256
+flash: 1024
+supported:
+  - gpio
+  - uart
+  - spi
+  - dma
+  - mcan
+  - pwm
+  - usbd
+  - cherryusb
+  - ethercat
+vendor: hpmicro

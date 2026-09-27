@@ -1,0 +1,170 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (c) 2026 */
+
+/dts-v1/;
+#include <hpmicro/hpm5e31.dtsi>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include "dust-hpm5e3y-pinctrl.dtsi"
+
+/ {
+	model = "Dust HPM5E3Y EtherCAT Controller";
+	compatible = "dust,hpm5e3y";
+
+	aliases {
+		canbus = &mcan0;
+		ethercat0 = &esc0;
+		onboard-imu-cs = &imu_cs;
+		onboard-imu-int1 = &imu_int1;
+		onboard-imu-drdy = &imu_int1;
+		onboard-imu-int2 = &imu_int2;
+		ethercat-phy-int = &ethercat_phy_int;
+		dbus-control = &dbus_ctrl;
+		onboard-imu-heater = &onboard_imu_heater;
+		pwm-buzzer = &pwm_buzzer;
+		coredump-partition = &coredump_partition;
+	};
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &sram;
+		zephyr,flash = &flash0;
+		zephyr,itcm = &ilm;
+		zephyr,dtcm = &dlm;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,flash-controller = &xpi0;
+		zephyr,canbus = &can0;
+		wbr-control,oscilloscope-uart = &uart0;
+		wbr-control,remote-input-uart = &uart4;
+		wbr-control,hi91-uart = &uart6;
+		wbr-control,onboard-imu-spi = &spi1;
+	};
+
+	board_gpios {
+		compatible = "gpio-leds";
+		imu_cs: imu_cs { gpios = <&gpioc 11 GPIO_ACTIVE_LOW>; };
+		imu_int1: imu_int1 { gpios = <&gpiob 30 GPIO_ACTIVE_HIGH>; };
+		imu_int2: imu_int2 { gpios = <&gpiob 31 GPIO_ACTIVE_HIGH>; };
+		ethercat_phy_int: ethercat_phy_int { gpios = <&gpiof 22 GPIO_ACTIVE_LOW>; };
+		dbus_ctrl: dbus_ctrl { gpios = <&gpioa 18 GPIO_ACTIVE_HIGH>; };
+	};
+
+	pwm_outputs {
+		compatible = "pwm-leds";
+		onboard_imu_heater: onboard_imu_heater {
+			pwms = <&pwm0 3 PWM_KHZ(20) PWM_POLARITY_NORMAL>;
+			label = "Onboard IMU heater MOSFET";
+		};
+		pwm_buzzer: pwm_buzzer {
+			pwms = <&pwm0 6 PWM_HZ(2000) PWM_POLARITY_NORMAL>;
+			label = "Onboard buzzer";
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart0>;
+	pinctrl-names = "default";
+	dmas = <&hdma 0 8>, <&hdma 1 9>;
+	dma-names = "rx", "tx";
+};
+
+&uart4 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart4>;
+	pinctrl-names = "default";
+	dmas = <&hdma 2 16>, <&hdma 3 17>;
+	dma-names = "rx", "tx";
+};
+
+&uart6 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart6>;
+	pinctrl-names = "default";
+	dmas = <&hdma 4 20>, <&hdma 5 21>;
+	dma-names = "rx", "tx";
+};
+
+&spi1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_spi1>;
+	pinctrl-names = "default";
+	dmas = <&hdma 6 2>, <&hdma 7 3>;
+	dma-names = "rx", "tx";
+};
+
+&mcan0 { status = "okay"; pinctrl-0 = <&pinmux_mcan0>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan1 { status = "okay"; pinctrl-0 = <&pinmux_mcan1>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan2 { status = "okay"; pinctrl-0 = <&pinmux_mcan2>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan3 { status = "okay"; pinctrl-0 = <&pinmux_mcan3>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+
+&gpioa {
+	status = "okay";
+	pinctrl-0 = <&pinmux_board_gpio>;
+	pinctrl-names = "default";
+};
+&gpiob { status = "okay"; };
+&gpioc { status = "okay"; };
+&gpiod { status = "okay"; };
+&gpioe { status = "okay"; };
+&gpiof { status = "okay"; pinctrl-0 = <&pinmux_esc_gpio>; pinctrl-names = "default"; };
+&hdma { status = "okay"; };
+&xdma { status = "okay"; };
+
+&pwm0 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_pwm0>;
+	pinctrl-names = "default";
+	period-init = <100>;
+	dead-zone-in-half-cycle = <0>;
+};
+
+&esc0 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_esc0>;
+	pinctrl-names = "default";
+	reset-gpios = <&gpiof 23 GPIO_ACTIVE_LOW>;
+	phy-address-offset = <0>;
+	phy-addresses = <0 1>;
+	nmii-link-ctrl-indices = <0 0>;
+	nmii-link-inverted = <0 0>;
+	nmii-link-from-io-mask = <0>;
+	eeprom-emulation;
+	eeprom-read-size = <4>;
+};
+
+cherryusb_usb0: &usb0 {
+	compatible = "hpmicro,hpm-cherryusb";
+	status = "disabled";
+};
+
+&xpi0 {
+	status = "okay";
+	flash0: flash@0 {
+		compatible = "hpmicro,hpmicro-flash", "soc-nv-flash";
+		reg = <0x80000000 DT_SIZE_M(1)>;
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+		nor-cfg-opt-hdr = <0xfcf90001>;
+		nor-cfg-opt-opt0 = <0x07>;
+		nor-cfg-opt-opt1 = <0>;
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			boot_partition: partition@0 { label = "boot"; reg = <0 0x3000>; };
+			slot0_partition: partition@3000 { label = "image-0"; reg = <0x3000 0xbc000>; };
+			slot1_partition: partition@bf000 { label = "image-1-reserved"; reg = <0xbf000 0x1000>; };
+			scratch_partition: partition@c0000 { label = "scratch-reserved"; reg = <0xc0000 0x1000>; };
+			ethercat_eeprom_partition: partition@d0000 { label = "ethercat-eeprom"; reg = <0xd0000 0x10000>; };
+			coredump_partition: storage_partition: partition@e0000 {
+				label = "coredump-partition";
+				reg = <0xe0000 0x20000>;
+			};
+		};
+	};
+};

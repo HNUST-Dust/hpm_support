@@ -1,0 +1,2 @@
+config BOARD_DUST_HPM5E3Y
+	select SOC_HPM5E31
