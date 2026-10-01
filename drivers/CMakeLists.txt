@@ -3,6 +3,7 @@
 
 zephyr_include_directories(${ZEPHYR_BASE}/drivers)
 
+add_subdirectory(interrupt_controller)
 add_subdirectory(clock_control)
 add_subdirectory(dma)
 add_subdirectory(serial)

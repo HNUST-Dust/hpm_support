@@ -262,7 +262,7 @@
         };
 
         plic: interrupt-controller@e4000000 {
-            compatible = "sifive,plic-1.0.0";
+            compatible = "hpmicro,hpm-plic";
             #address-cells = <1>;
             #interrupt-cells = <2>;
             interrupt-controller;

@@ -1,0 +1,37 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+config HPM_PLIC
+	bool "HPMicro Platform Level Interrupt Controller"
+	default y
+	depends on DT_HAS_HPMICRO_HPM_PLIC_ENABLED
+	select MULTI_LEVEL_INTERRUPTS
+	select 2ND_LEVEL_INTERRUPTS
+	help
+	  HPMicro PLIC driver. This is API-compatible with Zephyr's RISC-V
+	  PLIC support and can optionally allow higher-priority external IRQs
+	  to preempt a lower-priority external IRQ handler.
+
+if HPM_PLIC
+
+config HPM_PLIC_PRIORITY_NESTING
+	bool "Allow priority-based nesting of HPM PLIC interrupts"
+	depends on !SMP
+	help
+	  While a PLIC ISR is running, raise the PLIC threshold to that ISR's
+	  priority and re-enable machine interrupts. Only a strictly higher
+	  priority PLIC source can then preempt it. Equal and lower priorities
+	  remain pending. Keep this disabled until ISR stack size and all ISR
+	  code have been audited for nesting.
+
+config HPM_PLIC_MAX_NESTING_DEPTH
+	int "Maximum simultaneous HPM PLIC ISR depth"
+	default 4
+	range 2 16
+	depends on HPM_PLIC_PRIORITY_NESTING
+	help
+	  Maximum number of simultaneously active HPM PLIC handlers. At this
+	  depth the current handler still runs, but machine interrupts remain
+	  disabled so the ISR stack cannot grow without bound.
+
+endif # HPM_PLIC

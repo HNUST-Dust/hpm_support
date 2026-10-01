@@ -1,0 +1,14 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro RISC-V platform-level interrupt controller
+
+compatible: "hpmicro,hpm-plic"
+
+include: riscv,plic0.yaml
+
+properties:
+  riscv,ndev:
+    type: int
+    description: Number of external interrupts supported
+    required: true
