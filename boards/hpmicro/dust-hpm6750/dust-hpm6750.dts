@@ -184,6 +184,7 @@
 
 &can0 {
 	status = "okay";
+	interrupts = <47 2>;
 	pinctrl-0 = <&pinmux_can0>;
 	pinctrl-names = "default";
 	bitrate = <1000000>;
@@ -194,6 +195,7 @@
 
 &can1 {
 	status = "okay";
+	interrupts = <48 2>;
 	pinctrl-0 = <&pinmux_can1>;
 	pinctrl-names = "default";
 	bitrate = <1000000>;
@@ -204,6 +206,7 @@
 
 &can2 {
 	status = "okay";
+	interrupts = <49 2>;
 	pinctrl-0 = <&pinmux_can2>;
 	pinctrl-names = "default";
 	bitrate = <1000000>;
@@ -214,6 +217,7 @@
 
 &can3 {
 	status = "okay";
+	interrupts = <50 2>;
 	pinctrl-0 = <&pinmux_can3>;
 	pinctrl-names = "default";
 	bitrate = <1000000>;

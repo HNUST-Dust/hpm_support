@@ -12,8 +12,12 @@
 
 #ifdef CONFIG_XIP
 #include <hpm_bootheader.h>
+#define SOC_NV_FLASH_NODE DT_CHOSEN(zephyr_flash)
 __attribute__((section(".nor_cfg_option"), used)) const uint32_t option[4] = {
-	0xfcf90001, 0x00000007, 0x0, 0x0
+	DT_PROP(SOC_NV_FLASH_NODE, nor_cfg_opt_hdr),
+	DT_PROP(SOC_NV_FLASH_NODE, nor_cfg_opt_opt0),
+	DT_PROP(SOC_NV_FLASH_NODE, nor_cfg_opt_opt1),
+	0x0
 };
 __attribute__((section(".last_section"))) const uint32_t rom_marker =
 	CONFIG_LINKER_LAST_SECTION_ID_PATTERN;
@@ -37,6 +41,7 @@ static void soc_init_clock(void)
 	clock_add_to_group(clock_hdma, 0);
 	clock_add_to_group(clock_xdma, 0);
 	clock_add_to_group(clock_gpio, 0);
+	clock_add_to_group(clock_pwm0, 0);
 	clock_connect_group_to_cpu(0, 0);
 	pcfg_dcdc_set_voltage(HPM_PCFG, 1200);
 	clock_set_source_divider(clock_cpu0, clk_src_pll0_clk0, 1);

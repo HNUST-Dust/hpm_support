@@ -12,14 +12,25 @@
 		group0 { pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 24), IOC_TYPE_IOC, 0, 2)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 25), IOC_TYPE_IOC, 0, 2)>; input-enable; };
 	};
 	pinmux_spi1: pinmux_spi1 {
-		group0 { pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 10), IOC_TYPE_IOC, 0, 5)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 11), IOC_TYPE_IOC, 0, 5)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 12), IOC_TYPE_IOC, 0, 5)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 13), IOC_TYPE_IOC, 0, 5)>; input-enable; };
+		group0 { pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 10), IOC_TYPE_IOC, 0, 5)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 12), IOC_TYPE_IOC, 0, 5)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 13), IOC_TYPE_IOC, 0, 5)>; input-enable; };
+	};
+	pinmux_imu_cs: pinmux_imu_cs {
+		group0 { pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 11), IOC_TYPE_IOC, 0, 0)>; };
 	};
 	pinmux_pwm0: pinmux_pwm0 {
 		group0 {
-			/* P2: WS2812, P3: IMU power, P6: buzzer. */
-			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 2), IOC_TYPE_IOC, 0, 16)>,
-				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 3), IOC_TYPE_IOC, 0, 16)>,
+			/* P3: IMU power, P6: buzzer. */
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 3), IOC_TYPE_IOC, 0, 16)>,
 				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 6), IOC_TYPE_IOC, 0, 16)>;
+		};
+	};
+	pinmux_ws2812_gpio: pinmux_ws2812_gpio {
+		group0 {
+			/* D15 WS2812B DIN: PWM0_P2 pad used as GPIO for timed output. */
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 2), IOC_TYPE_IOC, 0, 0)>;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
 		};
 	};
 	pinmux_mcan0: pinmux_mcan0 { group0 { pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 0), IOC_TYPE_IOC, 0, 7)>, <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTD, 1), IOC_TYPE_IOC, 0, 7)>; input-enable; }; };

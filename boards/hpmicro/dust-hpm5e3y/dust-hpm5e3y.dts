@@ -21,12 +21,12 @@
 		dbus-control = &dbus_ctrl;
 		onboard-imu-heater = &onboard_imu_heater;
 		pwm-buzzer = &pwm_buzzer;
+		ws2812 = &status_ws2812;
 		coredump-partition = &coredump_partition;
 	};
 
 	chosen {
-		zephyr,console = &uart0;
-		zephyr,shell-uart = &uart0;
+		/* UART0 is reserved for binary telemetry; diagnostics use RTT. */
 		zephyr,sram = &sram;
 		zephyr,flash = &flash0;
 		zephyr,itcm = &ilm;
@@ -47,6 +47,7 @@
 		imu_int2: imu_int2 { gpios = <&gpiob 31 GPIO_ACTIVE_HIGH>; };
 		ethercat_phy_int: ethercat_phy_int { gpios = <&gpiof 22 GPIO_ACTIVE_LOW>; };
 		dbus_ctrl: dbus_ctrl { gpios = <&gpioa 18 GPIO_ACTIVE_HIGH>; };
+		status_ws2812: status_ws2812 { gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>; };
 	};
 
 	pwm_outputs {
@@ -64,16 +65,20 @@
 
 &uart0 {
 	status = "okay";
-	current-speed = <115200>;
+	/* UART0 carries the VOFA stream; interactive diagnostics use RTT. */
+	current-speed = <921600>;
 	pinctrl-0 = <&pinmux_uart0>;
 	pinctrl-names = "default";
+	/* HPM5E3Y DMAMUX request 9 is UART0 TX. Reserve RX request 8 too so
+	 * Zephyr exposes the driver's async API used by VOFA transmission.
+	 */
 	dmas = <&hdma 0 8>, <&hdma 1 9>;
 	dma-names = "rx", "tx";
 };
 
 &uart4 {
 	status = "okay";
-	current-speed = <115200>;
+	current-speed = <921600>;
 	pinctrl-0 = <&pinmux_uart4>;
 	pinctrl-names = "default";
 	dmas = <&hdma 2 16>, <&hdma 3 17>;
@@ -97,10 +102,10 @@
 	dma-names = "rx", "tx";
 };
 
-&mcan0 { status = "okay"; pinctrl-0 = <&pinmux_mcan0>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
-&mcan1 { status = "okay"; pinctrl-0 = <&pinmux_mcan1>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
-&mcan2 { status = "okay"; pinctrl-0 = <&pinmux_mcan2>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
-&mcan3 { status = "okay"; pinctrl-0 = <&pinmux_mcan3>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan0 { status = "okay"; interrupts = <46 2>; pinctrl-0 = <&pinmux_mcan0>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan1 { status = "okay"; interrupts = <47 2>; pinctrl-0 = <&pinmux_mcan1>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan2 { status = "okay"; interrupts = <48 2>; pinctrl-0 = <&pinmux_mcan2>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
+&mcan3 { status = "okay"; interrupts = <49 2>; pinctrl-0 = <&pinmux_mcan3>; pinctrl-names = "default"; bitrate = <1000000>; can-transceiver { max-bitrate = <5000000>; }; };
 
 &gpioa {
 	status = "okay";
@@ -108,8 +113,12 @@
 	pinctrl-names = "default";
 };
 &gpiob { status = "okay"; };
-&gpioc { status = "okay"; };
-&gpiod { status = "okay"; };
+&gpioc { status = "okay"; pinctrl-0 = <&pinmux_imu_cs>; pinctrl-names = "default"; };
+&gpiod {
+	status = "okay";
+	pinctrl-0 = <&pinmux_ws2812_gpio>;
+	pinctrl-names = "default";
+};
 &gpioe { status = "okay"; };
 &gpiof { status = "okay"; pinctrl-0 = <&pinmux_esc_gpio>; pinctrl-names = "default"; };
 &hdma { status = "okay"; };
@@ -149,9 +158,9 @@ cherryusb_usb0: &usb0 {
 		reg = <0x80000000 DT_SIZE_M(1)>;
 		erase-block-size = <4096>;
 		write-block-size = <1>;
-		nor-cfg-opt-hdr = <0xfcf90001>;
-		nor-cfg-opt-opt0 = <0x07>;
-		nor-cfg-opt-opt1 = <0>;
+		nor-cfg-opt-hdr = <0xfcf90002>;
+		nor-cfg-opt-opt0 = <0x05>;
+		nor-cfg-opt-opt1 = <0x1000>;
 		partitions {
 			compatible = "fixed-partitions";
 			#address-cells = <1>;
