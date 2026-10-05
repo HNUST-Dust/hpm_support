@@ -41,6 +41,9 @@ struct pwm_hpmicro_config {
 
 struct pwm_hpmicro_data {
 	uint32_t period_cycles[1];
+#if CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+	uint8_t enabled_channels;
+#endif
 };
 
 /* PWM version specific implementations */
@@ -144,9 +147,9 @@ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
 		       pwm_flags_t flags)
 {
 	const struct pwm_hpmicro_config *config = dev->config;
+	struct pwm_hpmicro_data *data = dev->data;
 	HPM_PWM_BASE_TYPE *pwm_base = config->base;
 	uint32_t rld, xrld, prld, rld_cmp, xrld_cmp;
-	uint16_t i, j;
 	
 	if (channel > 7) {
 		return -ENOTSUP;
@@ -239,20 +242,19 @@ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
 	/* Lock shadow registers to apply changes */
 	pwmv2_shadow_register_lock(pwm_base);
 
-	/* Handle four cmp mode for odd channels (1, 3, 5, 7) */
-	if (channel & 0x01) {
-		if (pwmv2_get_cmp_working_status(pwm_base, (pwm_channel_t)(channel - 1)) == 0xFFFFFF00) {
-			/* Odd channel - need to enable four_cmp for proper operation */
-			pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));  /* Enable for even channel */
-		} else {
-			pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));
-		}
+	/* An odd output needs its paired even channel's TRIG_SEL4 set when the
+	 * even output is unused. The compare working value does not identify
+	 * whether Zephyr enabled that output. */
+	const uint32_t even_channel = channel & ~1U;
+	const uint8_t enabled_after = data->enabled_channels | BIT(channel);
+	if ((enabled_after & BIT(even_channel)) == 0U) {
+		pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)even_channel);
 	} else {
-		/* Even channel - disable four cmp for normal PWM operation */
-		pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)channel);
+		pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)even_channel);
 	}
 	/* Enable channel output */
 	pwmv2_channel_enable_output(pwm_base, (pwm_channel_t)channel);
+	data->enabled_channels = enabled_after;
 	
 	/* Enable and start counter */
 	pwmv2_enable_counter(pwm_base, counter);
