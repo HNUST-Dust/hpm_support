@@ -28,19 +28,20 @@
 #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
 
 static mcan_rx_message_t s_can_rx_buf;
-static volatile bool has_sent_out;
 
 #define HPM_MCAN_NUM_TX_BUF_ELEMENTS (32U)
 #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
 
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
-ATTR_PLACE_AT("AHB_SRAM") uint32_t board_app_mcan_msg_buf[MCAN_MSG_BUF_SIZE_IN_WORDS];
-static mcan_msg_buf_attr_t s_can_info[] = {
-    {
-        .ram_base = (uint32_t) &board_app_mcan_msg_buf,
-        .ram_size = sizeof(board_app_mcan_msg_buf),
-    },
-};
+/* Give each enabled MCAN its own message RAM without reserving RAM for
+ * controller instances that are absent or disabled.
+ */
+#define HPM_MCAN_MSG_BUF_DEFINE(n) \
+    ATTR_PLACE_AT("AHB_SRAM") static uint32_t hpm_mcan_msg_buf_##n[MCAN_MSG_BUF_SIZE_IN_WORDS];
+#define HPM_MCAN_MSG_BUF_CONFIG(n) .msg_buf = hpm_mcan_msg_buf_##n,
+#else
+#define HPM_MCAN_MSG_BUF_DEFINE(n)
+#define HPM_MCAN_MSG_BUF_CONFIG(n)
 #endif
 
 /* Default baudrate: 1Mbps @80MHz CAN clock */
@@ -60,6 +61,9 @@ struct hpm_mcan_config {
     uint32_t clock_div;
     void (*irq_config_func)(const struct device *dev);
     const struct pinctrl_dev_config *pincfg;
+#if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+    uint32_t *msg_buf;
+#endif
 };
 
 struct hpm_mcan_data {
@@ -296,7 +300,6 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
     }
     /* Transmit completed */
     if ((flags & MCAN_EVENT_TRANSMIT) != 0U) {
-        has_sent_out = true;
         hpm_mcan_tc_event_handler(dev, 0);
     }
 
@@ -320,15 +323,17 @@ static int hpm_mcan_init(const struct device *dev)
 
     k_mutex_init(&data->inst_mutex);
     k_mutex_init(&data->tx_mutex);
-    k_sem_init(&data->tx_sem, HPM_MCAN_NUM_TX_BUF_ELEMENTS, HPM_MCAN_NUM_TX_BUF_ELEMENTS);
+    /* The send path always uses dedicated TX buffer 0. Admit one in-flight
+     * frame per controller; the completion ISR releases the token.
+     */
+    k_sem_init(&data->tx_sem, 1, 1);
 
     for (uint32_t i= 0; i < ARRAY_SIZE(data->tx_fin_sem); i++) {
-        k_sem_init(&data->tx_fin_sem[i], 1, 1);
+        k_sem_init(&data->tx_fin_sem[i], 0, 1);
     }
 
     data->filter_rtr = 0;
     data->filter_rtr_mask = 0;
-    has_sent_out = true;
 
     /* Configure dt provided device signals when available */
     ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
@@ -338,7 +343,11 @@ static int hpm_mcan_init(const struct device *dev)
     }
 
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
-    status = mcan_set_msg_buf_attr(can, &s_can_info[0]);
+    mcan_msg_buf_attr_t msg_buf_attr = {
+        .ram_base = (uint32_t)cfg->msg_buf,
+        .ram_size = MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t),
+    };
+    status = mcan_set_msg_buf_attr(can, &msg_buf_attr);
     if (status != status_success) {
         LOG_ERR("MCAN set msg buf in AHB RAM failed");
         return -EAGAIN;
@@ -530,12 +539,6 @@ static int hpm_mcan_send(const struct device *dev,
 		return -ENETDOWN;
 	}
 
-    while (!has_sent_out) {
-
-    }
-
-    has_sent_out = false;
-
     (void) hpm_mcan_get_state(dev, &state, NULL);
     if (state == CAN_STATE_BUS_OFF) {
         LOG_DBG("Transmit failed, bus-off");
@@ -546,6 +549,8 @@ static int hpm_mcan_send(const struct device *dev,
     if (ret != 0) {
         return -EAGAIN;
     }
+
+    k_sem_reset(&data->tx_fin_sem[0]);
 
     mcan_tx_frame_t tx_buf;
     memset(&tx_buf, 0, sizeof(tx_buf));
@@ -560,12 +565,17 @@ static int hpm_mcan_send(const struct device *dev,
 
     k_mutex_unlock(&data->tx_mutex);
     if (status != 0) {
+        data->tx_fin_cb[0] = NULL;
+        data->tx_fin_cb_arg[0] = NULL;
+        k_sem_give(&data->tx_sem);
         return -EIO;
     }
 
     if (callback == NULL) {
         LOG_DBG("Waiting for TX complete");
-        k_sem_take(&data->tx_fin_sem[0], K_FOREVER);
+        if (k_sem_take(&data->tx_fin_sem[0], timeout) != 0) {
+            return -EAGAIN;
+        }
     }
 
 
@@ -791,23 +801,21 @@ static int hpm_mcan_get_state(const struct device *dev,
     mcan_error_count_t error_count;
     memset(&error_count, 0, sizeof(mcan_error_count_t));
 
+    mcan_parse_protocol_status(can->PSR, &protocol_status);
+    mcan_get_error_counter(can, &error_count);
+
     if (!data->started) {
-        *state = CAN_STATE_STOPPED;
+        if (state != NULL) {
+            *state = CAN_STATE_STOPPED;
+        }
     } else {
         if (state != NULL) {
-            uint8_t flags = mcan_get_interrupt_flags(can);
-            if ((flags & MCAN_EVENT_ERROR) != 0) {
-                mcan_parse_protocol_status(can->PSR, &protocol_status);
-                mcan_get_error_counter(can, &error_count);
-                if (protocol_status.in_bus_off_state) {
-                    *state = CAN_STATE_BUS_OFF;
-                } else if (protocol_status.in_warning_state) {
-                    *state = CAN_STATE_ERROR_WARNING;
-                } else if (protocol_status.in_error_passive_state) {
-                    *state = CAN_STATE_ERROR_PASSIVE;
-                } else {
-                    *state = CAN_STATE_ERROR_ACTIVE;
-                }
+            if (protocol_status.in_bus_off_state) {
+                *state = CAN_STATE_BUS_OFF;
+            } else if (protocol_status.in_warning_state) {
+                *state = CAN_STATE_ERROR_WARNING;
+            } else if (protocol_status.in_error_passive_state) {
+                *state = CAN_STATE_ERROR_PASSIVE;
             } else {
                 *state = CAN_STATE_ERROR_ACTIVE;
             }
@@ -1000,7 +1008,7 @@ static const struct can_driver_api hpm_mcan_driver_api = {
         .prop_seg = 2,
         .phase_seg1 = 3,
         .phase_seg2 = 2,
-        .prescaler = 10,
+        .prescaler = 1,
     },
     .timing_max = {
         .sjw = 4,
@@ -1033,6 +1041,7 @@ static const struct can_driver_api hpm_mcan_driver_api = {
 
 #define HPM_MCAN_INIT(n)                     \
 \
+    HPM_MCAN_MSG_BUF_DEFINE(n) \
     PINCTRL_DT_INST_DEFINE(n); \
         static void hpm_mcan_irq_config_func##n(const struct device *dev); \
     \
@@ -1044,6 +1053,7 @@ static const struct can_driver_api hpm_mcan_driver_api = {
         .clock_div = DT_INST_PROP(n, clk_divider), \
         .irq_config_func = hpm_mcan_irq_config_func##n, \
         .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n), \
+        HPM_MCAN_MSG_BUF_CONFIG(n) \
     }; \
     \
     static struct hpm_mcan_data hpm_mcan_data_##n = {.config = DEFAULT_HPM_MCAN_CONFIG, }; \
