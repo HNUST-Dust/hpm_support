@@ -107,6 +107,10 @@ uint32_t hpm_can_get_first_filter_index(const can_receive_buf_t *buf,
     uint32_t filter_index = -EINVAL;
     for (uint32_t i = 0; i < data->can_filter_count; i++) {
         const can_filter_config_t *filter = &data->filter_list[i];
+        /* Include RTR in software dispatch before selecting the first ID match. */
+        if (!!buf->remote_frame != !!(data->filter_rtr & BIT(i))) {
+            continue;
+        }
 
         /* NOTE: if corresponding bit field is 1, it means "don't care" */
         if (((buf->extend_id == 1) && (filter->id_mode == can_filter_id_mode_extended_frames)) ||
