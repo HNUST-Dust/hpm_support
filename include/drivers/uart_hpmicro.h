@@ -30,6 +30,19 @@ int uart_hpm_rx_circular_get_position(const struct device *dev, size_t *position
 /** @brief 停止由 uart_hpm_rx_circular_enable() 启动的循环接收。 */
 int uart_hpm_rx_circular_disable(const struct device *dev);
 
+/** Select external RX-line idle notification before finite async RX starts.
+ * Sets RFIFOT=0 and suppresses FIFO RX IRQs; the board owns the idle detector.
+ */
+int uart_hpm_rx_line_idle_enable(const struct device *dev);
+
+/** Publish newly received bytes after independently detected RX-line idle.
+ * Retains the current DMA buffer. Returns byte count, or -EAGAIN if DMA
+ * completion must be handled first. Must not be used as an active-stream poll.
+ * The caller must provide coherent/noncacheable RX memory and serialize
+ * detector setup with RX lifecycle. This is not a DMA write-drain primitive.
+ */
+int uart_hpm_rx_line_idle_flush(const struct device *dev);
+
 #ifdef __cplusplus
 }
 #endif
