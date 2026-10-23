@@ -35,6 +35,24 @@ int uart_hpm_rx_circular_disable(const struct device *dev);
  */
 int uart_hpm_rx_line_idle_enable(const struct device *dev);
 
+/** @brief Prepare optional board RX-line idle detection before async RX starts.
+ *
+ * Selects external idle publication for the UART wired to the board detector.
+ * Other UARTs and boards without a detector return 0 and keep native timeout
+ * handling. Call before uart_rx_enable(); must be paired with
+ * uart_hpm_rx_line_idle_start() once reception is enabled.
+ */
+int uart_hpm_rx_line_idle_prepare(const struct device *dev);
+
+/** @brief Start optional board RX-line idle detection after async RX is enabled.
+ *
+ * @param dev UART device passed to uart_rx_enable().
+ * @param timeout_us Quiet-line interval; the board detector defines resolution.
+ * @return Zero on success or when the UART has no detector, negative errno
+ * otherwise.
+ */
+int uart_hpm_rx_line_idle_start(const struct device *dev, uint32_t timeout_us);
+
 /** Publish newly received bytes after independently detected RX-line idle.
  * Retains the current DMA buffer. Returns byte count, or -EAGAIN if DMA
  * completion must be handled first. Must not be used as an active-stream poll.

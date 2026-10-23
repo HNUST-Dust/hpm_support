@@ -16,3 +16,14 @@ config UART_HPMICRO
 	select DMA if SERIAL_SUPPORT_ASYNC
 	help
 	  This option enables the UART driver for HPM SoC family.
+
+config UART_HPMICRO_RX_LINE_IDLE
+	bool "UART10 partial RX publication by external line-idle detection"
+	default y if BOARD_DUST_HPM6750
+	depends on UART_HPMICRO && UART_ASYNC_API && UART_INTERRUPT_DRIVEN
+	help
+	  Publish the partially filled UART10 RX DMA buffer after the RX line has
+	  been idle for the configured interval. The Dust V3 DBUS RX signal reaches
+	  UART10 RX/PC04 and PB13/TRGM1_P03; GPTMR2 channel 2 captures edges and
+	  channel 0 provides the compare event. The board must provide the
+	  uart10_idle_timer interrupt node. Do not enable on other wiring.

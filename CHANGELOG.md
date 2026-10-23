@@ -1,5 +1,16 @@
 # Change Log
 
+## [Unreleased]
+
+### Added:
+- [drivers][uart]: add board-gated UART10 RX line-idle detection (TRGM1/GPTMR2)
+  and the `uart_hpm_rx_line_idle_prepare()`/`_start()` driver API for partial
+  RX DMA publication.
+
+### Changed:
+- [boards]: move the dust-hpm6750 UART10 idle-timer devicetree node into the
+  board DTS.
+
 ## [0.7.0]: 2026.1.30
 
 All changes since 0.6.0

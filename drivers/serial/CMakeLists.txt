@@ -2,4 +2,4 @@
 # SPDX-License-Identifier: Apache-2.0
 
 zephyr_library_amend()
-zephyr_library_sources_ifdef(CONFIG_UART_HPMICRO uart_hpmicro.c)
+zephyr_library_sources_ifdef(CONFIG_UART_HPMICRO uart_hpmicro.c uart_hpmicro_line_idle.c)
