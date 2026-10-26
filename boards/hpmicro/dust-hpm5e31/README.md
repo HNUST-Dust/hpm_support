@@ -67,7 +67,8 @@ U1 为自定义针序，不可直接假定与 ARM 10-pin 调试接口兼容：
 | 9 | 3.3V 参考 | 3.3V |
 
 Pin10 为 +5V，不是探针的 3.3V 参考。Pin1/2 复用 UART0；U1 未引出 MCU RESET，
-nTRST 不能当作系统 nRESET。探针端信号名称与目标端同名连接，不交叉 TDI/TDO。
+nTRST 不能当作系统 nRESET。新板在初始化前使用 `reset_config trst_only` 覆盖
+SDK 探针脚本中的 `srst_only`。探针端信号名称与目标端同名连接，不交叉 TDI/TDO。
 
 板级 OpenOCD 脚本来自当前 West 工作区的 HPM SDK，支持 HPM_SDK_DIR 覆盖，
 OPENOCD_CONFIG_DIR 可显式指定。板级默认 JTAG 500 kHz，避免工作区 SDK 的
@@ -76,3 +77,8 @@ OPENOCD_CONFIG_DIR 可显式指定。板级默认 JTAG 500 kHz，避免工作区
 若 TAP ID 为 0xffffffff，且伴随 CMSIS-DAP 0x12 未实现、0x14 响应错位，
 说明在写 Flash 之前的调试连接阶段失败。应先排查探针固件/后端兼容性和实际接线，
 不能通过放宽 expected-id 或修改应用 PDO 解决。不自动更新探针固件或替换调试器。
+
+板级核对结果：SoC 选择 HPM5E31；SDK 的 HPM5E00 通用 TAP 参数为
+IR 长度 5、IDCODE 0x1000563d；新板 pinctrl 没有将 PA04～PA08 改作 UART/CAN。
+上述为源码和原理图核对，不等于已经读到实板 ID。全 1 读数下的 DTM version 15
+不能用来判断真实 DTM 版本，也不能通过放宽 expected-id 或 IR capture 检查规避。

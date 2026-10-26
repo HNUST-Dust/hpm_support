@@ -33,5 +33,7 @@ board_runner_args(openocd "--config=${OPENOCD_CONFIG_DIR}/probes/cmsis_dap.cfg"
 	"--config=${OPENOCD_CONFIG_DIR}/soc/hpm5e00.cfg"
 	"--config=${OPENOCD_CONFIG_DIR}/boards/hpm5e00evk.cfg"
 	"--openocd-search=${OPENOCD_CONFIG_DIR}"
-    "--cmd-pre-init=adapter speed 500" --target-handle=hpm5e00.cpu0)
+    "--cmd-pre-init=adapter speed 500"
+    # U1 仅引出 nTRST，没有接系统 nRESET；覆盖 SDK 探针脚本的 srst_only。
+    "--cmd-pre-init=reset_config trst_only" --target-handle=hpm5e00.cpu0)
 include(${ZEPHYR_BASE}/boards/common/openocd.board.cmake)
