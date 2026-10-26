@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
-set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../../sdk_env/hpm_sdk/boards/openocd)
+# 使用当前 West 工作区的 SDK，避免误用上一级工作区的同名目录。
+get_filename_component(DUST_HPM5E31_WORKSPACE
+    "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+if(DEFINED HPM_SDK_DIR)
+    set(OPENOCD_CONFIG_RELATIVE "${HPM_SDK_DIR}/boards/openocd")
+else()
+    set(OPENOCD_CONFIG_RELATIVE "${DUST_HPM5E31_WORKSPACE}/sdk_env/hpm_sdk/boards/openocd")
+endif()
 set(HPM_MACOS_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../../usr/local)
 set(HPM_RTT_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../../openocd-hpm-rtt-v0.1.0/local-rtt)
 get_filename_component(OPENOCD_CONFIG_ABSOLUTE ${OPENOCD_CONFIG_RELATIVE} ABSOLUTE)
@@ -25,5 +32,6 @@ endif()
 board_runner_args(openocd "--config=${OPENOCD_CONFIG_DIR}/probes/cmsis_dap.cfg"
 	"--config=${OPENOCD_CONFIG_DIR}/soc/hpm5e00.cfg"
 	"--config=${OPENOCD_CONFIG_DIR}/boards/hpm5e00evk.cfg"
-	"--openocd-search=${OPENOCD_CONFIG_DIR}" --target-handle=hpm5e00.cpu0)
+	"--openocd-search=${OPENOCD_CONFIG_DIR}"
+    "--cmd-pre-init=adapter speed 500" --target-handle=hpm5e00.cpu0)
 include(${ZEPHYR_BASE}/boards/common/openocd.board.cmake)

@@ -51,3 +51,28 @@ PF02 用于 MII TXCK）。因此暂不提供 ws2812 别名，不猜测 LED 引�
 
 此定义经过编译检查，尚未刷板。PHY 专有寄存器、100BASE-T1 对端角色、ESC
 链路检测及 INIT/PREOP/SAFEOP/OP 状态切换需要在后续无输出实板联调中确认。
+
+## JTAG 接口和识别失败
+
+U1 为自定义针序，不可直接假定与 ARM 10-pin 调试接口兼容：
+
+| U1 引脚 | 信号 | MCU |
+| --- | --- | --- |
+| 3 | TDI | PA05 |
+| 4 | TDO | PA04 |
+| 5 | nTRST | PA08 |
+| 6 | TMS | PA07 |
+| 7 | TCK | PA06 |
+| 8 | GND | GND |
+| 9 | 3.3V 参考 | 3.3V |
+
+Pin10 为 +5V，不是探针的 3.3V 参考。Pin1/2 复用 UART0；U1 未引出 MCU RESET，
+nTRST 不能当作系统 nRESET。探针端信号名称与目标端同名连接，不交叉 TDI/TDO。
+
+板级 OpenOCD 脚本来自当前 West 工作区的 HPM SDK，支持 HPM_SDK_DIR 覆盖，
+OPENOCD_CONFIG_DIR 可显式指定。板级默认 JTAG 500 kHz，避免工作区 SDK 的
+8 MHz 默认值用于杜邦线初次联调。修改默认路径后需 pristine 构建清除旧 CMake 缓存。
+
+若 TAP ID 为 0xffffffff，且伴随 CMSIS-DAP 0x12 未实现、0x14 响应错位，
+说明在写 Flash 之前的调试连接阶段失败。应先排查探针固件/后端兼容性和实际接线，
+不能通过放宽 expected-id 或修改应用 PDO 解决。不自动更新探针固件或替换调试器。
