@@ -1,0 +1,17 @@
+identifier: dust-hpm5e31
+name: Dust HPM5E31 EtherCAT Controller
+type: mcu
+arch: riscv32
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 256
+flash: 1024
+supported:
+  - gpio
+  - uart
+  - dma
+  - mcan
+  - pwm
+  - ethercat
+vendor: hpmicro

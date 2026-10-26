@@ -124,6 +124,66 @@
 			interrupt-parent = <&plic>;
 			status = "disabled";
 		};
+		uart1: serial@f0044000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf0044000 DT_SIZE_K(16)>;
+			interrupts = <20 1>;
+			interrupt-names = "uart";
+			clocks = <&clk 18284565 3 10>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+		uart2: serial@f0048000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf0048000 DT_SIZE_K(16)>;
+			interrupts = <21 1>;
+			interrupt-names = "uart";
+			clocks = <&clk 18350102 3 10>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+		uart3: serial@f004c000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf004c000 DT_SIZE_K(16)>;
+			interrupts = <22 1>;
+			interrupt-names = "uart";
+			clocks = <&clk 18415639 3 10>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+		uart5: serial@f0054000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf0054000 DT_SIZE_K(16)>;
+			interrupts = <24 1>;
+			interrupt-names = "uart";
+			clocks = <&clk 18546713 3 10>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+		spi2: spi@f0078000 {
+			compatible = "hpmicro,hpm-spi";
+			reg = <0xf0078000 DT_SIZE_K(16)>;
+			interrupts = <33 1>;
+			clocks = <&clk 18087954 3 10>;
+			interrupt-parent = <&plic>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			cs-sck-delay = <3>;
+			cs-minimum-high-time = <11>;
+			status = "disabled";
+		};
+		spi3: spi@f007c000 {
+			compatible = "hpmicro,hpm-spi";
+			reg = <0xf007c000 DT_SIZE_K(16)>;
+			interrupts = <34 1>;
+			clocks = <&clk 18153491 3 10>;
+			interrupt-parent = <&plic>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			cs-sck-delay = <3>;
+			cs-minimum-high-time = <11>;
+			status = "disabled";
+		};
 		spi1: spi@f0074000 {
 			compatible = "hpmicro,hpm-spi";
 			reg = <0xf0074000 DT_SIZE_K(16)>;
