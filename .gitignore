@@ -8,6 +8,9 @@ sec_core_img.c
 *.o
 *.idx
 
+
+west.yml
+west_gitee.yml
 docs/build/*
 docs/source/en/samples/*
 docs/source/en/snippets/*
