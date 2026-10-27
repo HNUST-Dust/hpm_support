@@ -15,6 +15,14 @@ extern "C" {
  */
 int hpm_mcan_send_batch(const struct device *dev, const struct can_frame *frames, size_t count,
                         k_timeout_t timeout, can_tx_callback_t callback, void *user_data);
+/* Same atomic submission, with a final deadline check immediately before
+ * TXBAR. deadline_us is nonzero absolute microsecond uptime, in the domain of
+ * k_ticks_to_us_floor64(k_uptime_ticks()). Rejection returns -ETIMEDOUT and
+ * never requests hardware transmission or invokes the callback.
+ */
+int hpm_mcan_send_batch_until(const struct device *dev, const struct can_frame *frames,
+                              size_t count, k_timeout_t timeout, uint64_t deadline_us,
+                              can_tx_callback_t callback, void *user_data);
 /* Cancel the current batch and wait for hardware pending bits to clear.
  * timeout_us must be 1..20000; includes mutex acquisition. Returns -ETIMEDOUT
  * if hardware is still pending. Admission remains blocked in that case.
