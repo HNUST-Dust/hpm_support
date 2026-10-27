@@ -1,0 +1,107 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/dts-v1/;
+#include <hpmicro/hpm5e31.dtsi>
+#include <dt-bindings/dma/hpm5e31-dmamux.h>
+#include "dust_5E31-pinctrl.dtsi"
+
+/ {
+	model = "HPM5E31 custom board (UART0 PA00/PA01)";
+	compatible = "hpmicro,dust-5e31";
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &sram;
+		zephyr,flash = &flash0;
+		zephyr,flash-controller = &xpi0;
+		zephyr,itcm = &ilm;
+		zephyr,dtcm = &dlm;
+		zephyr,canbus = &mcan0;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&hdma {
+	status = "okay";
+};
+
+&mcan0 {
+	status = "okay";
+	bitrate = <1000000>;
+	pinctrl-0 = <&mcan0_default>;
+	pinctrl-names = "default";
+};
+
+&mcan1 {
+	status = "okay";
+	bitrate = <1000000>;
+	pinctrl-0 = <&mcan1_default>;
+	pinctrl-names = "default";
+};
+
+&mcan2 {
+	status = "okay";
+	bitrate = <1000000>;
+	pinctrl-0 = <&mcan2_default>;
+	pinctrl-names = "default";
+};
+
+&mcan3 {
+	status = "okay";
+	bitrate = <1000000>;
+	pinctrl-0 = <&mcan3_default>;
+	pinctrl-names = "default";
+};
+
+&esc0 {
+	status = "okay";
+	pinctrl-0 = <&esc0_default>;
+	pinctrl-names = "default";
+	software-link0;
+	/* Initial offset only. The single RTL8201F is discovered at physical
+	 * MDIO 0..3 and the runtime ESC offset is updated to its strap address.
+	 */
+	phy-addr-offset = <1>;
+	/* No LINK pin is shown; poll Clause 22 BMSR for Port0. */
+	/* RESETn is not shown. Add phy-reset-gpios after checking schematic;
+	 * without it the PHY must have hardware reset.
+	 */
+};
+
+/* PA24/PA25 are ESC TXCK/TXD0; keep UART6 clear of them. UART0 is console. */
+&uart6 {
+	status = "disabled";
+};
+
+/* 1 MiB NOR; reserve the last 64 KiB for EtherCAT EEPROM emulation. */
+&xpi0 {
+	status = "okay";
+
+	flash0: flash@80000000 {
+		compatible = "hpmicro,hpmicro-flash", "soc-nv-flash";
+		reg = <0x80000000 DT_SIZE_M(1)>;
+		status = "okay";
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+		nor-cfg-opt-hdr = <0xfcf90002>;
+		nor-cfg-opt-opt0 = <0x00000005>;
+		nor-cfg-opt-opt1 = <0x00001000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ecat_eeprom_partition: partition@f0000 {
+				label = "ecat-eeprom";
+				reg = <0xf0000 0x10000>;
+			};
+		};
+	};
+};

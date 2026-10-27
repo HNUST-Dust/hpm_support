@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../../sdk_env/hpm_sdk/boards/openocd)
-set(HPM_TOOLS_RELATIVE ${ZEPHYR_BASE}/../../sdk_env/tools)
+set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../sdk_env/hpm_sdk/boards/openocd)
+set(HPM_TOOLS_RELATIVE ${ZEPHYR_BASE}/../sdk_env/tools)
 set(HPM_MACOS_OPENOCD_RELATIVE ${ZEPHYR_BASE}/../../tools/usr/local)
 get_filename_component(OPENOCD_CONFIG_ABSOLUTE ${OPENOCD_CONFIG_RELATIVE} ABSOLUTE)
 get_filename_component(HPM_TOOLS_ABSOLUTE ${HPM_TOOLS_RELATIVE} ABSOLUTE)

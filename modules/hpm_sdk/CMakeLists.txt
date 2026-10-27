@@ -11,6 +11,12 @@ set(HPM_SDK_BINARY_DIR ${CMAKE_BINARY_DIR}/hpm_sdk)
 set(HPM_BOARD_DIR ${CONFIG_BOARD})
 string(TOUPPER ${SOC_NAME} HPM_SOC_TOUPPER)
 set(HPM_SOC ${HPM_SOC_TOUPPER})
+# The installed SDK has HPM5E3Y register definitions but no SoC implementation.
+# Reuse the HPM5E31 implementation while their generated IP/IRQ files match.
+if(CONFIG_SOC_HPM5E3Y AND NOT EXISTS "${HPM_SDK_DIR}/soc/HPM5E00/HPM5E3Y/CMakeLists.txt")
+    message(STATUS "HPM5E3Y SDK implementation missing; using HPM5E31 SoC sources")
+    set(HPM_SOC HPM5E31)
+endif()
 string(TOUPPER ${SOC_SERIES} HPM_SOC_SERIES_TOUPPER)
 set(HPM_SOC_SERIES ${HPM_SOC_SERIES_TOUPPER})
 set(TOOLCHAIN_VARIANT "zephyr")
