@@ -21,6 +21,8 @@
 #include "hpm_common.h"
 #include "hpm_mcan_drv.h"
 #include "hpm_clock_drv.h"
+#include <drivers/can/hpmicro_mcan_batch.h>
+#include "hpm_mcan_tx_state.h"
 
 #define HPM_CAN_EXT_FILTER_NUM_MAX (64U)
 #define HPM_CAN_STD_FILTER_NUM_MAX (128U)
@@ -28,6 +30,7 @@
 #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
 
 static mcan_rx_message_t s_can_rx_buf;
+static const struct can_driver_api hpm_mcan_driver_api;
 
 #define HPM_MCAN_NUM_TX_BUF_ELEMENTS (32U)
 #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
@@ -83,6 +86,10 @@ struct hpm_mcan_data {
     /* RTOS misc. */
     struct k_mutex inst_mutex;
     struct k_mutex tx_mutex;
+    struct k_spinlock tx_lock;
+    struct hpm_mcan_tx_state tx_batch;
+    bool tx_sync_waiting;
+    int tx_result;
     enum can_state state;
     struct k_sem tx_sem;
     struct k_sem tx_fin_sem[HPM_MCAN_NUM_TX_BUF_ELEMENTS];
@@ -110,7 +117,7 @@ LOG_MODULE_REGISTER(hpmicro_hpm_mcan, CONFIG_CAN_LOG_LEVEL);
 static int hpm_mcan_get_state(const struct device *dev,
                              enum can_state *state,
                              struct can_bus_err_cnt *err_cnt);
-static void hpm_mcan_tc_event_handler(const struct device *dev, uint32_t index);
+static void hpm_mcan_tc_event_handler(const struct device *dev);
 static void hpm_mcan_state_change_handler(const struct device *dev);
 
 /*
@@ -278,6 +285,8 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
     const struct hpm_mcan_config *cfg = dev->config;
     MCAN_Type *can = cfg->base;
     uint32_t flags = mcan_get_interrupt_flags(can);
+    /* Acknowledge this snapshot before callbacks can submit a new batch. */
+    mcan_clear_interrupt_flags(can, flags);
     /* New message is available in RXFIFO0 */
     if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) != 0) {
         hpm_mcan_get_message_from_rxfifo(dev, 0);
@@ -298,9 +307,9 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
             }
         }
     }
-    /* Transmit completed */
-    if ((flags & MCAN_EVENT_TRANSMIT) != 0U) {
-        hpm_mcan_tc_event_handler(dev, 0);
+    /* Completion and cancellation can arrive in separate interrupt rounds. */
+    if ((flags & (MCAN_EVENT_TRANSMIT | MCAN_INT_TX_CANCEL_FINISHED)) != 0U) {
+        hpm_mcan_tc_event_handler(dev);
     }
 
     /* Error happened */
@@ -308,7 +317,6 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
         hpm_mcan_state_change_handler(dev);
     }
 
-    mcan_clear_interrupt_flags(can, flags);
 }
 
 static int hpm_mcan_init(const struct device *dev)
@@ -323,8 +331,8 @@ static int hpm_mcan_init(const struct device *dev)
 
     k_mutex_init(&data->inst_mutex);
     k_mutex_init(&data->tx_mutex);
-    /* The send path always uses dedicated TX buffer 0. Admit one in-flight
-     * frame per controller; the completion ISR releases the token.
+    /* One in-flight batch owns dedicated TX buffers 0..count-1. Do not
+     * release this token when only buffer zero has completed.
      */
     k_sem_init(&data->tx_sem, 1, 1);
 
@@ -361,9 +369,10 @@ static int hpm_mcan_init(const struct device *dev)
     clock_set_source_divider(cfg->clock_name, cfg->clock_src, cfg->clock_div);
 
     /* Set Interrupt Enable Mask */
-    uint32_t interrupt_mask = MCAN_EVENT_RECEIVE | MCAN_EVENT_TRANSMIT | MCAN_EVENT_ERROR;
+    uint32_t interrupt_mask = MCAN_EVENT_RECEIVE | MCAN_EVENT_TRANSMIT | MCAN_EVENT_ERROR | MCAN_INT_TX_CANCEL_FINISHED;
     config->interrupt_mask = interrupt_mask;
     config->txbuf_trans_interrupt_mask = ~0UL;
+    config->txbuf_cancel_finish_interrupt_mask = ~0UL;
 
     /* Set CAN filter list */
     config->all_filters_config.ext_id_filter_list.mcan_filter_elem_count = data->ext_filter_count;
@@ -483,25 +492,16 @@ static void convert_can_frame_to_mcan_frame(const struct can_frame *frame,
     }
 }
 
-
-static int hpm_mcan_send(const struct device *dev,
-                        const struct can_frame *frame,
-                        k_timeout_t timeout,
-                        can_tx_callback_t callback,
-                        void *user_data)
-{
-    int ret;
-    const struct hpm_mcan_config *cfg = dev->config;
-    struct hpm_mcan_data *data = dev->data;
-    MCAN_Type *can = cfg->base;
-    enum can_state state;
-    hpm_stat_t status;
-
+static int hpm_mcan_validate_frame(struct hpm_mcan_data *data, const struct can_frame *frame) {
+    if (!frame || frame->id > ((frame->flags & CAN_FRAME_IDE) ? 0x1fffffffU : 0x7ffU)) {
+        return -EINVAL;
+    }
 #ifdef CONFIG_CAN_FD_MODE
-	if (((data->config.enable_canfd) != 0)) {
+    if (((data->config.enable_canfd) != 0)) {
         if ((frame->flags & CAN_FRAME_ESI) != 0) {
             if ((frame->flags & CAN_FRAME_BRS) == 0) {
-                LOG_ERR("unsupported CAN frame flags, CAN_FRAME_ESI Only valid in combination with CAN_FRAME_FDF");
+                LOG_ERR("unsupported CAN frame flags, CAN_FRAME_ESI Only valid in combination with "
+                        "CAN_FRAME_FDF");
                 return -ENOTSUP;
             }
         }
@@ -513,7 +513,7 @@ static int hpm_mcan_send(const struct device *dev,
             LOG_ERR("DLC of %d exceeds maximum (%d)", frame->dlc, CAN_MAX_DLC);
             return -EINVAL;
         }
-	} else {
+    } else {
         if ((frame->flags & (CAN_FRAME_FDF | CAN_FRAME_BRS | CAN_FRAME_ESI)) != 0) {
             LOG_ERR("unsupported CAN frame flags 0x%02x", frame->flags);
             return -ENOTSUP;
@@ -524,10 +524,10 @@ static int hpm_mcan_send(const struct device *dev,
         }
     }
 #else
-	if ((frame->flags & (CAN_FRAME_FDF | CAN_FRAME_BRS | CAN_FRAME_ESI)) != 0) {
-		LOG_ERR("unsupported CAN frame flags 0x%02x", frame->flags);
-		return -ENOTSUP;
-	}
+    if ((frame->flags & (CAN_FRAME_FDF | CAN_FRAME_BRS | CAN_FRAME_ESI)) != 0) {
+        LOG_ERR("unsupported CAN frame flags 0x%02x", frame->flags);
+        return -ENOTSUP;
+    }
 
     if (frame->dlc > CAN_MAX_DLC) {
         LOG_ERR("DLC of %d exceeds maximum (%d)", frame->dlc, CAN_MAX_DLC);
@@ -535,51 +535,113 @@ static int hpm_mcan_send(const struct device *dev,
     }
 #endif
 
-    if (!data->started) {
-		return -ENETDOWN;
-	}
+    return 0;
+}
 
-    (void) hpm_mcan_get_state(dev, &state, NULL);
-    if (state == CAN_STATE_BUS_OFF) {
-        LOG_DBG("Transmit failed, bus-off");
-        return -ENETUNREACH;
+static int hpm_mcan_submit(const struct device *dev, const struct can_frame *frames, size_t count,
+                           k_timeout_t timeout, can_tx_callback_t callback, void *user_data) {
+    const struct hpm_mcan_config *cfg = dev->config;
+    struct hpm_mcan_data *data = dev->data;
+    MCAN_Type *can = cfg->base;
+    if (!frames || !count || count > 16 ||
+        count > data->config.ram_config.txbuf_dedicated_txbuf_elem_count) {
+        return -EINVAL;
     }
-
-    ret = k_sem_take(&data->tx_sem, timeout);
-    if (ret != 0) {
-        return -EAGAIN;
-    }
-
-    k_sem_reset(&data->tx_fin_sem[0]);
-
-    mcan_tx_frame_t tx_buf;
-    memset(&tx_buf, 0, sizeof(tx_buf));
-    convert_can_frame_to_mcan_frame(frame, &tx_buf);
-
-    k_mutex_lock(&data->tx_mutex, timeout);
-
-    data->tx_fin_cb[0] = callback;
-    data->tx_fin_cb_arg[0] = user_data;
-
-    status = mcan_transmit_via_txbuf_nonblocking(can, 0, &tx_buf);
-
-    k_mutex_unlock(&data->tx_mutex);
-    if (status != 0) {
-        data->tx_fin_cb[0] = NULL;
-        data->tx_fin_cb_arg[0] = NULL;
-        k_sem_give(&data->tx_sem);
-        return -EIO;
-    }
-
-    if (callback == NULL) {
-        LOG_DBG("Waiting for TX complete");
-        if (k_sem_take(&data->tx_fin_sem[0], timeout) != 0) {
-            return -EAGAIN;
+    for (size_t i = 0; i < count; ++i) {
+        int result = hpm_mcan_validate_frame(data, &frames[i]);
+        if (result) {
+            return result;
         }
     }
+    int result = k_sem_take(&data->tx_sem, timeout);
+    if (result) {
+        return -EAGAIN;
+    }
+    result = k_mutex_lock(&data->tx_mutex, timeout);
+    if (result) {
+        k_sem_give(&data->tx_sem);
+        return result;
+    }
+    enum can_state state;
+    (void)hpm_mcan_get_state(dev, &state, NULL);
+    if (!data->started || state == CAN_STATE_BUS_OFF) {
+        result = data->started ? -ENETUNREACH : -ENETDOWN;
+        goto rejected;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        mcan_tx_frame_t buffer;
+        memset(&buffer, 0, sizeof(buffer));
+        convert_can_frame_to_mcan_frame(&frames[i], &buffer);
+        if (mcan_write_txbuf(can, i, &buffer) != status_success) {
+            result = -EIO;
+            goto rejected;
+        }
+    }
+#if defined(CAN_SOC_TX_RX_BUFFER_ACCESS_WORKAROUND) && CAN_SOC_TX_RX_BUFFER_ACCESS_WORKAROUND
+    uint32_t remaining = 1000000U;
+    while (mcan_get_activity(can) == mcan_activity_receiver) {
+        if (!--remaining) {
+            result = -ETIMEDOUT;
+            goto rejected;
+        }
+    }
+#endif
+    k_sem_reset(&data->tx_fin_sem[0]);
+    k_spinlock_key_t key = k_spin_lock(&data->tx_lock);
+    mcan_clear_interrupt_flags(can, MCAN_EVENT_TRANSMIT | MCAN_INT_TX_CANCEL_FINISHED);
+    if (!hpm_mcan_tx_begin(&data->tx_batch, count)) {
+        k_spin_unlock(&data->tx_lock, key);
+        result = -EBUSY;
+        goto rejected;
+    }
+    data->tx_fin_cb[0] = callback;
+    data->tx_fin_cb_arg[0] = user_data;
+    data->tx_sync_waiting = callback == NULL;
+    data->tx_result = 0;
+    mcan_send_add_multiple_requests(can, data->tx_batch.active);
+    k_spin_unlock(&data->tx_lock, key);
+    k_mutex_unlock(&data->tx_mutex);
+    if (callback) {
+        return 0;
+    }
 
+    result = k_sem_take(&data->tx_fin_sem[0], timeout);
+    key = k_spin_lock(&data->tx_lock);
+    data->tx_sync_waiting = false;
+    if (!data->tx_batch.active) {
+        /* Keep admission until this waiter has consumed its own result. */
+        if (!result) {
+            result = data->tx_result;
+        }
+        k_sem_give(&data->tx_sem);
+    }
+    k_spin_unlock(&data->tx_lock, key);
+    return result;
+rejected:
+    k_mutex_unlock(&data->tx_mutex);
+    k_sem_give(&data->tx_sem);
+    return result;
+}
 
-    return 0;
+static int hpm_mcan_send(const struct device *dev, const struct can_frame *frame,
+                         k_timeout_t timeout, can_tx_callback_t callback, void *user_data) {
+    return hpm_mcan_submit(dev, frame, 1, timeout, callback, user_data);
+}
+
+int hpm_mcan_send_batch(const struct device *dev, const struct can_frame *frames, size_t count,
+                        k_timeout_t timeout, can_tx_callback_t callback, void *user_data) {
+    if (!dev || !frames || !callback || !count || count > 16 || k_is_in_isr()) {
+        return -EINVAL;
+    }
+    if (dev->api != &hpm_mcan_driver_api) {
+        return -ENOTSUP;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (frames[i].dlc > 8 || (frames[i].flags & ~(CAN_FRAME_IDE | CAN_FRAME_RTR))) {
+            return -EINVAL;
+        }
+    }
+    return hpm_mcan_submit(dev, frames, count, timeout, callback, user_data);
 }
 
 static int hpm_mcan_add_rx_filter_ext(const struct device *dev,
@@ -871,19 +933,72 @@ static void hpm_mcan_set_state_change_callback(const struct device *dev,
     data->state_change_cb_data = user_data;
 }
 
-static void hpm_mcan_tc_event_handler(const struct device *dev, uint32_t index)
-{
+/* Claim completion once under the spinlock, invoke user code without locks. */
+static void hpm_mcan_complete(const struct device *dev, uint32_t transmitted, uint32_t cancelled,
+                              int forced_error, uint32_t generation) {
     struct hpm_mcan_data *data = dev->data;
-    can_tx_callback_t tx_cb;
-    k_sem_give(&data->tx_sem);
-    tx_cb = data->tx_fin_cb[index];
-    if (tx_cb  == NULL) {
-        k_sem_give(&data->tx_fin_sem[index]);
+    can_tx_callback_t callback = NULL;
+    void *user = NULL;
+    bool failed = false;
+    k_spinlock_key_t key = k_spin_lock(&data->tx_lock);
+    if (!hpm_mcan_tx_observe_generation(&data->tx_batch, transmitted, cancelled, generation,
+                                        &failed)) {
+        k_spin_unlock(&data->tx_lock, key);
+        return;
+    }
+    data->tx_result = forced_error ? forced_error : failed ? -ECANCELED : 0;
+    const int result = data->tx_result;
+    callback = data->tx_fin_cb[0];
+    user = data->tx_fin_cb_arg[0];
+    data->tx_fin_cb[0] = NULL;
+    data->tx_fin_cb_arg[0] = NULL;
+    if (data->tx_sync_waiting) {
+        k_sem_give(&data->tx_fin_sem[0]);
     } else {
-        tx_cb(dev, 0, data->tx_fin_cb_arg[index]);
+        k_sem_give(&data->tx_sem);
+    }
+    k_spin_unlock(&data->tx_lock, key);
+    if (callback) {
+        callback(dev, result, user);
     }
 }
+static void hpm_mcan_tc_event_handler(const struct device *dev) {
+    const struct hpm_mcan_config *cfg = dev->config;
+    hpm_mcan_complete(dev, cfg->base->TXBTO, cfg->base->TXBCF, 0, 0);
+}
 
+int hpm_mcan_abort_tx(const struct device *dev, uint32_t timeout_us) {
+    if (!dev || !timeout_us || timeout_us > 20000 || k_is_in_isr()) {
+        return -EINVAL;
+    }
+    if (dev->api != &hpm_mcan_driver_api) {
+        return -ENOTSUP;
+    }
+    const struct hpm_mcan_config *cfg = dev->config;
+    struct hpm_mcan_data *data = dev->data;
+    const uint64_t start = k_cycle_get_64();
+    int result = k_mutex_lock(&data->tx_mutex, K_USEC(timeout_us));
+    if (result) {
+        return result;
+    }
+    k_spinlock_key_t key = k_spin_lock(&data->tx_lock);
+    const uint32_t active = data->tx_batch.active;
+    const uint32_t generation = data->tx_batch.generation;
+    cfg->base->TXBCR = active;
+    k_spin_unlock(&data->tx_lock, key);
+    while (cfg->base->TXBRP & active) {
+        if (k_cyc_to_us_floor64(k_cycle_get_64() - start) >= timeout_us) {
+            k_mutex_unlock(&data->tx_mutex);
+            return -ETIMEDOUT;
+        }
+        k_busy_wait(1);
+    }
+    /* Block admission until the old callback has been claimed; callbacks are
+     * dispatched below after the mutex is released. ISR may have claimed first. */
+    k_mutex_unlock(&data->tx_mutex);
+    hpm_mcan_complete(dev, cfg->base->TXBTO, cfg->base->TXBCF | active, 0, generation);
+    return 0;
+}
 
 static int hpm_mcan_get_core_clock(const struct device *dev, uint32_t *rate)
 {
@@ -937,38 +1052,47 @@ static int hpm_mcan_set_timing_data(const struct device *dev, const struct can_t
 }
 #endif
 
-static int hpm_mcan_start(const struct device *dev)
-{
-    const struct hpm_mcan_config *config = dev->config;
+static int hpm_mcan_start(const struct device *dev) {
+    const struct hpm_mcan_config *cfg = dev->config;
     struct hpm_mcan_data *data = dev->data;
-    mcan_config_t *can_config = &data->config;
-    MCAN_Type *can = config->base;
-
+    int result = k_mutex_lock(&data->tx_mutex, K_FOREVER);
+    if (result) {
+        return result;
+    }
     if (data->started) {
+        k_mutex_unlock(&data->tx_mutex);
         return -EALREADY;
     }
-
-    uint32_t can_clk_freq = clock_get_frequency(config->clock_name);
-    mcan_init(can, can_config, can_clk_freq);
-
+    const uint32_t frequency = clock_get_frequency(cfg->clock_name);
+    if (mcan_init(cfg->base, &data->config, frequency) != status_success) {
+        k_mutex_unlock(&data->tx_mutex);
+        return -EIO;
+    }
     data->started = true;
-
+    k_mutex_unlock(&data->tx_mutex);
     return 0;
 }
 
-static int hpm_mcan_stop(const struct device *dev)
-{
-    const struct hpm_mcan_config *config = dev->config;
+static int hpm_mcan_stop(const struct device *dev) {
+    const struct hpm_mcan_config *cfg = dev->config;
     struct hpm_mcan_data *data = dev->data;
-
+    int result = k_mutex_lock(&data->tx_mutex, K_FOREVER);
+    if (result) {
+        return result;
+    }
     if (!data->started) {
-		return -EALREADY;
-	}
-
-    mcan_deinit(config->base);
-
+        k_mutex_unlock(&data->tx_mutex);
+        return -EALREADY;
+    }
+    mcan_deinit(cfg->base);
     data->started = false;
-
+    mcan_clear_interrupt_flags(cfg->base, MCAN_EVENT_TRANSMIT | MCAN_INT_TX_CANCEL_FINISHED);
+    k_spinlock_key_t key = k_spin_lock(&data->tx_lock);
+    const uint32_t active = data->tx_batch.active;
+    const uint32_t generation = data->tx_batch.generation;
+    k_spin_unlock(&data->tx_lock, key);
+    k_mutex_unlock(&data->tx_mutex);
+    hpm_mcan_complete(dev, 0, active, -ENETDOWN, generation);
     return 0;
 }
 
