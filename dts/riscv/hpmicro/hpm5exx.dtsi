@@ -245,6 +245,7 @@
 			interrupts = <61 4>, <62 3>, <63 3>, <64 2>;
 			interrupt-names = "pdi", "sync0", "sync1", "reset";
 			interrupt-parent = <&plic>;
+			clocks = <&clk 20643873 6 5>;
 			status = "disabled";
 		};
 	};
