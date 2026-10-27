@@ -8,19 +8,24 @@
 #define DT_DRV_COMPAT hpmicro_hpm_uart
 
 #include <errno.h>
-#include <zephyr/kernel.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/uart.h>
-#include <zephyr/sys/util.h>
 #include <soc.h>
 #include <hpm_common.h>
 #include <hpm_uart_drv.h>
 #include <hpm_clock_drv.h>
+#if defined(CONFIG_SOC_HPM5E31) && HPM_IP_FEATURE_UART_RX_IDLE_DETECT
+#define HPM_UART_HW_RX_IDLE 1
+#else
+#define HPM_UART_HW_RX_IDLE 0
+#endif
 #ifdef CONFIG_UART_ASYNC_API
+#include <hpm_trgmmux_src.h>
+#include <hpm_trgm_drv.h>
+#include <hpm_gptmr_drv.h>
 #endif
 #include <zephyr/drivers/dma.h>
 #include <zephyr/logging/log.h>
-#include <drivers/uart_hpmicro.h>
 LOG_MODULE_REGISTER(uart_hpmicro);
 #ifdef CONFIG_UART_ASYNC_API
 
@@ -49,6 +54,22 @@ typedef struct dmamux_info {
     uint8_t src;
 } dmamux_info_t;
 
+typedef struct trgm_info {
+    TRGM_Type *ptr;
+    uint32_t pin_index;
+    uint8_t input_src;
+    uint8_t output_gptmr_in;
+    uint8_t output_gptmr_synci;
+} trgm_info_t;
+
+typedef struct gptmr_info {
+    GPTMR_Type *ptr;
+    clock_name_t clock_name;
+    uint8_t cmp_ch;
+    uint8_t cap_ch;
+    uint8_t irq_index;
+} gptmr_info_t;
+
 struct stream {
 	const struct device *dma_dev;
 	uint32_t channel; /* stores the channel for dma */
@@ -64,16 +85,13 @@ struct uart_hpm_cfg {
 	uint32_t parity;
 	uint32_t baud_rate;
 	uint8_t flow_ctrl;
-	uint8_t data_bits;
 	bool loopback_en;
-	uint8_t stop_bits;
 #ifdef CONFIG_UART_ASYNC_API
-	bool async_capable;
+	bool dma_enabled;
 #endif
-#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+#if defined(CONFIG_UART_INTERRUPT_DRIVEN) || (defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE)
 	uart_irq_config_func_t irq_config_func;
-	int irq_num;
-#endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+#endif
 	const struct pinctrl_dev_config *pincfg;
 };
 
@@ -91,11 +109,9 @@ struct uart_hpm_data {
     uart_info_t uart_info;
     dma_info_t dma_rxinfo;
 	dma_info_t dma_txinfo;
+    trgm_info_t trgm_info;
+    gptmr_info_t gptmr_info;
 	uint32_t idle_time_out_us;
-	/* true: HDMA linked descriptor 正在持续写应用提供的环形内存。 */
-	bool rx_circular_mode;
-	bool rx_line_idle_mode;
-	uint32_t rx_generation;
 	volatile uint32_t status_flags;
 	struct stream dma_rx;
 	struct stream dma_tx;
@@ -103,10 +119,43 @@ struct uart_hpm_data {
 };
 
 #ifdef CONFIG_UART_ASYNC_API
-static void uart_hpm_async_rx_flush(const struct device *dev);
-static void uart_hpm_handle_rx_timeout(const struct device *dev);
-static void uart_hpm_dma_callback(const struct device *dev, void *arg,
-				  uint32_t channel, int status);
+#if !HPM_UART_HW_RX_IDLE
+static void config_gptmr_to_detect_uart_rx_idle(gptmr_info_t *gptmr_info, trgm_info_t *trgm_info, uint32_t time_out)
+{
+    uint32_t gptmr_freq, bits;
+    gptmr_channel_config_t config;
+
+    bits = 12+6; /* use max value: 1 start bit, 8 data bits, 2 stop bits, 1 parity bit */
+    gptmr_freq = clock_get_frequency(gptmr_info->clock_name);
+    gptmr_channel_get_default_config(gptmr_info->ptr, &config);
+    config.cmp[0] = (gptmr_freq / 1000000) * time_out; /* Time to transmit a byte */
+    config.cmp[1] = 0xffffffff;
+    config.synci_edge = gptmr_synci_edge_both;
+    gptmr_channel_config(gptmr_info->ptr, gptmr_info->cmp_ch, &config, false);
+    gptmr_channel_reset_count(gptmr_info->ptr, gptmr_info->cmp_ch);
+
+    /* config uart rx -> TRGM INPUT IO -> GPTMR SYNCI */
+    trgm_output_update_source(trgm_info->ptr, trgm_info->output_gptmr_synci, trgm_info->input_src);
+
+    gptmr_enable_irq(gptmr_info->ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info->cmp_ch, 0)); /* enable compare irq */
+    /* not start gptmr cmp channel counter, start this channel counter when rx reception start */
+}
+
+static void config_gptmr_to_detect_uart_rx_start(gptmr_info_t *gptmr_info, trgm_info_t *trgm_info)
+{
+    gptmr_channel_config_t config;
+    gptmr_channel_get_default_config(gptmr_info->ptr, &config);
+    config.mode = gptmr_work_mode_capture_at_falling_edge;
+
+    gptmr_channel_config(gptmr_info->ptr, gptmr_info->cap_ch, &config, false);
+    gptmr_channel_reset_count(gptmr_info->ptr, gptmr_info->cap_ch);
+
+    /* configure uart_rx -> TRGM INPUT IO -> GPTMR IN */
+    trgm_output_update_source(trgm_info->ptr, trgm_info->output_gptmr_in, trgm_info->input_src);
+    gptmr_enable_irq(gptmr_info->ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info->cap_ch)); /* enable capture irq */
+    gptmr_start_counter(gptmr_info->ptr, gptmr_info->cap_ch);
+}
+#endif
 
 static int uart_hpm_dma_tx_load(const struct device *dev, const uint8_t *buf, size_t len)
 {
@@ -161,17 +210,14 @@ static int uart_hpm_dma_rx_load(const struct device *dev, uint8_t *buf, size_t l
 	/* prepare the block for this RX DMA channel */
 	memset(blk_cfg, 0, sizeof(struct dma_block_config));
 
-	/*
-	 * RX DMA 的职责只有一层：UART RBR/FIFO -> 应用提供的线性 DMA buffer。
-	 * 后续由应用选择复制到 ring buffer，或等待 BUF_RELEASED 后零拷贝处理。
-	 */
+	/* rx direction has peripheral as source and mem as dest. */
 	blk_cfg->dest_address = (uint32_t)buf;
 	stream->dma_cfg.channel_direction = PERIPHERAL_TO_MEMORY;
 	blk_cfg->source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	blk_cfg->dest_addr_adj   = DMA_ADDR_ADJ_INCREMENT;
 
 	blk_cfg->block_size = len;
-	/* 源地址固定为 UART 接收缓冲寄存器 RBR，每个 DMA request 搬 1 字节。 */
+	/* Source is SPI DATA reg */
 	blk_cfg->source_address = (uint32_t)&(base->RBR);
 	stream->dma_cfg.source_burst_length = 1;
 
@@ -213,24 +259,18 @@ static int uart_hpm_configure_init(const struct device *dev, const struct uart_c
 	// 	return -ENODEV;
 	// }
 #endif
-	clock_set_source_divider(config->clock_name, config->clock_src, 1U);
+	clock_set_source_divider(config->clock_name, config->clock_src, 4U);
 	clock_add_to_group(config->clock_name, 0);
 
 	uart_default_config(base, &uart_config);
 	uart_config.src_freq_in_hz =	 clock_get_frequency(config->clock_name);
 	uart_config.baudrate = cfg->baudrate;
 #ifdef CONFIG_UART_ASYNC_API
-	if (config->async_capable) {
+	if (config->dma_enabled) {
 		uart_config.fifo_enable = true;
 		uart_config.dma_enable = true;
 		uart_config.tx_fifo_level = uart_tx_fifo_trg_not_full;
-		/*
-		 * Legacy threshold; HPM6700 erratum E00018 requires RFIFOT=0 for
-		 * RX DMA. Nonzero RFIFOT does not reliably gate DMA requests.
-		 * The line-idle mode applies that workaround for UART10.
-		 * FIFO timeout is not a latched DMA-buffer idle notification.
-		 */
-		uart_config.rx_fifo_level = uart_rx_fifo_trg_gt_three_quarters;
+		uart_config.rx_fifo_level = uart_rx_fifo_trg_not_empty;
 	}
 #endif
 	switch (cfg->parity) {
@@ -306,15 +346,25 @@ static int uart_hpm_init(const struct device *dev)
 	if (ret < 0) {
 		return ret;
 	}
+#ifdef CONFIG_UART_ASYNC_API
+	if (cfg->dma_enabled &&
+	    (!device_is_ready(data->dma_tx.dma_dev) ||
+	     !device_is_ready(data->dma_rx.dma_dev))) {
+		return -ENODEV;
+	}
+#endif
 	uart_api_config->baudrate = cfg->baud_rate;
-	uart_api_config->parity = cfg->parity;
-	uart_api_config->stop_bits = cfg->stop_bits;
-	uart_api_config->data_bits = cfg->data_bits;
+	uart_api_config->parity = UART_CFG_PARITY_NONE;
+	uart_api_config->stop_bits = UART_CFG_STOP_BITS_1;
+	uart_api_config->data_bits = UART_CFG_DATA_BITS_8;
 	uart_api_config->flow_ctrl = cfg->flow_ctrl;
-	uart_hpm_configure_init(dev, uart_api_config);
-#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	ret = uart_hpm_configure_init(dev, uart_api_config);
+	if (ret != status_success) {
+		return -EIO;
+	}
+#if defined(CONFIG_UART_INTERRUPT_DRIVEN) || (defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE)
 	cfg->irq_config_func(dev);
-#endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+#endif
 
 	return 0;
 }
@@ -379,7 +429,6 @@ void uart_hpm_irq_tx_enable(const struct device *dev)
 {
 	const struct uart_hpm_cfg *const cfg = dev->config;
 
-	irq_enable(cfg->irq_num);
 	uart_enable_irq((UART_Type *)cfg->base, uart_intr_tx_slot_avail);
 }
 
@@ -416,7 +465,6 @@ void uart_hpm_irq_rx_enable(const struct device *dev)
 {
 	const struct uart_hpm_cfg *const cfg = dev->config;
 
-	irq_enable(cfg->irq_num);
 	uart_enable_irq((UART_Type *)cfg->base, uart_intr_rx_data_avail_or_timeout);
 }
 
@@ -472,38 +520,39 @@ void uart_hpm_irq_callback_set(const struct device *dev,
 	dev_data->user_data = user_data;
 }
 
+#endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+
+#if defined(CONFIG_UART_INTERRUPT_DRIVEN) || (defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE)
+#if defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE
+static void uart_hpm_rx_idle_isr(const struct device *dev);
+#endif
+
 __attribute__((section(".isr"))) static void uart_hpm_isr(const struct device *dev)
 {
 	struct uart_hpm_data * const dev_data = dev->data;
-#ifdef CONFIG_UART_ASYNC_API
-	const struct uart_hpm_cfg *const cfg = dev->config;
-	const uint8_t irq_id = uart_get_irq_id(cfg->base);
-	if (cfg->async_capable && (irq_id == uart_intr_id_rx_timeout)) {
-		/*
-		 * FIFO timeout requires unread FIFO data. DMA RBR reads can clear it
-		 * before the CPU reads IIR; this path cannot guarantee partial-buffer
-		 * publication. Reading IIR does NOT acknowledge RX timeout (UM 55.4.8).
-		 * The configured API timeout is currently only stored, not implemented.
-		 */
-		/*
-		 * 循环 DMA 模式绝不能在 timeout 中暂停通道。硬件产生的 timeout
-		 * DMA request 会自行把不足 FIFO 阈值的尾数搬入 ring；DMA 读取
-		 * RBR 才会清除 RX timeout，这里无需再做软件切换。
-		 */
-		if (!dev_data->rx_circular_mode) {
-			uart_hpm_handle_rx_timeout(dev);
-		}
-	}
-#endif
 
+#if defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE
+	uart_hpm_rx_idle_isr(dev);
+#endif
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	if (dev_data->user_cb) {
 		dev_data->user_cb(dev, dev_data->user_data);
 	}
+#else
+	ARG_UNUSED(dev_data);
+#endif
 }
-
-#endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+#endif
 
 #ifdef CONFIG_UART_ASYNC_API
+static inline void async_timer_start(struct k_work_delayable *work, size_t timeout_us)
+{
+	if ((timeout_us != SYS_FOREVER_US) && (timeout_us != 0)) {
+		LOG_DBG("async timer started for %d us", timeout_us);
+		k_work_reschedule(work, K_USEC(timeout_us));
+	}
+}
+
 static void async_user_callback(const struct device *dev, struct uart_event *evt)
 {
 	const struct uart_hpm_data *data = dev->data;
@@ -534,12 +583,8 @@ static void async_evt_tx_done(const struct device *dev)
 static void async_evt_rx_rdy(const struct device *dev)
 {
 	struct uart_hpm_data * const data = dev->data;
-	dma_info_t dma_rxinfo = data->dma_rxinfo;
+    dma_info_t dma_rxinfo = data->dma_rxinfo;
 
-	/*
-	 * 用快照构造事件，offset 指向本次新增数据的开头，len 是新增长度。
-	 * 先推进驱动内部 offset，再同步调用应用回调；下一次 flush 只报告后续字节。
-	 */
 	struct uart_event event = {
 		.type = UART_RX_RDY,
 		.data.rx.buf = dma_rxinfo.current_buf,
@@ -558,7 +603,6 @@ static void async_evt_rx_rdy(const struct device *dev)
 
 static void async_evt_rx_buf_request(const struct device *dev)
 {
-	/* 请求应用提前提供 next buffer；此调用会同步进入应用回调。 */
 	struct uart_event evt = {
 		.type = UART_RX_BUF_REQUEST,
 	};
@@ -566,12 +610,11 @@ static void async_evt_rx_buf_request(const struct device *dev)
 	async_user_callback(dev, &evt);
 }
 
-static void async_evt_rx_buf_release(const struct device *dev)
+static void async_evt_rx_buf_release(const struct device *dev, uint8_t *buf)
 {
-	struct uart_hpm_data *data = dev->data;
 	struct uart_event evt = {
 		.type = UART_RX_BUF_RELEASED,
-		.data.rx_buf.buf = data->dma_rxinfo.current_buf,
+		.data.rx_buf.buf = buf,
 	};
 	async_user_callback(dev, &evt);
 }
@@ -585,22 +628,7 @@ static void uart_hpm_async_rx_flush(const struct device *dev)
 
 	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &stat);
 	if (ret) {
-		LOG_ERR("ERR dma get status.\r\n");
-		data->dma_rxinfo.current_size = 0U;
-		return;
-	}
-	/*
-	 * DMA pending_length is the source-side remaining transfer count, not a
-	 * destination-write completion fence. dma_suspend() only clears ENABLE.
-	 * DMA pending_length 表示本次传输还剩多少字节未搬运。
-	 * 已搬总数 = total - pending；再减去之前已通过 UART_RX_RDY 发布的
-	 * current_offset，得到本次新增长度。例如 total=96、offset=0、
-	 * pending=14，则本次发布 82 字节。
-	 */
-	if (stat.pending_length > data->dma_rxinfo.current_total_size ||
-	    data->dma_rxinfo.current_offset >
-	    data->dma_rxinfo.current_total_size - stat.pending_length) {
-		data->dma_rxinfo.current_size = 0;
+		LOG_ERR("DMA RX status failed: %d", ret);
 		return;
 	}
 	rx_rcv_len = data->dma_rxinfo.current_total_size - 
@@ -613,6 +641,28 @@ static void uart_hpm_async_rx_flush(const struct device *dev)
 		data->dma_rxinfo.current_size = 0;
 	}
 }
+
+#if HPM_UART_HW_RX_IDLE
+static void uart_hpm_rx_idle_isr(const struct device *dev)
+{
+	const struct uart_hpm_cfg *cfg = dev->config;
+	struct uart_hpm_data *data = dev->data;
+
+	if (!uart_is_rxline_idle(cfg->base)) {
+		return;
+	}
+	uart_clear_rxline_idle_flag(cfg->base);
+	if (data->dma_rxinfo.current_buf == NULL) {
+		return;
+	}
+	if (dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel) == 0) {
+		uart_hpm_async_rx_flush(dev);
+		if (data->dma_rxinfo.current_buf != NULL) {
+			dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
+		}
+	}
+}
+#endif
 
 static uint32_t uart_hpm_async_tx_flush(const struct device *dev)
 {
@@ -637,20 +687,32 @@ static uint32_t uart_hpm_async_tx_flush(const struct device *dev)
 static int uart_hpm_rx_disable(const struct device *dev)
 {
 	struct uart_hpm_data *data = dev->data;
-	const struct uart_hpm_cfg *config = dev->config;
-
-	if (!config->async_capable) {
+	const struct uart_hpm_cfg *cfg = dev->config;
+	if (!cfg->dma_enabled) {
 		return -ENOTSUP;
 	}
-
 	const unsigned int key = irq_lock();
-	++data->rx_generation;
 
-	uart_disable_irq(config->base, uart_intr_rx_data_avail_or_timeout);
-	
+#if HPM_UART_HW_RX_IDLE
+	if (data->dma_rxinfo.current_buf == NULL) {
+		irq_unlock(key);
+		return -EFAULT;
+	}
+	uart_disable_rxline_idle_detection(cfg->base);
+	uart_disable_irq(cfg->base, uart_intr_rx_line_idle);
+#else
+	gptmr_clear_status(data->gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(data->gptmr_info.cmp_ch, 0)); /* clear cmp status */
+	gptmr_stop_counter(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* stop counter */
+	gptmr_channel_reset_count(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* clear counter */
+	gptmr_disable_irq(data->gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(data->gptmr_info.cmp_ch, 0)); /* disable cmp irq */
+#endif
+	ARG_UNUSED(cfg);
 	dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
 	uart_hpm_async_rx_flush(dev);
-	async_evt_rx_buf_release(dev);
+	async_evt_rx_buf_release(dev, data->dma_rxinfo.current_buf);
+	if (data->dma_rxinfo.next_dst_addr != NULL) {
+		async_evt_rx_buf_release(dev, data->dma_rxinfo.next_dst_addr);
+	}
 
 		/* disable dma channel */
 	dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
@@ -672,17 +734,73 @@ static int uart_hpm_rx_disable(const struct device *dev)
 	return 0;
 }
 
+#if !HPM_UART_HW_RX_IDLE
+/* this handler used to detect uart idle status */
+/* when gptmr cap irq occurs, think as uart rx start, enable gptmr cmp irq for rx idle */
+/* when gptmr cmp irq occurs, think as uart rx idle status, close gptmr cmp irq, close uart dma */
+void gptmr_detect_uart_rx_idle_handler(const struct device *dev)
+{
+	struct uart_hpm_data * const data = dev->data;
+    gptmr_info_t gptmr_info = data->gptmr_info;
+
+    /* cmp */
+    if (gptmr_check_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0))) {
+        gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0)); /* clear cmp status */
+        gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch); /* stop counter */
+        gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cmp_ch); /* clear counter */
+        gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0)); /* disable cmp irq */
+
+        /* disable dma channel */
+        dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
+
+        /* uart rx idle callback */
+        uart_hpm_async_rx_flush(dev);
+		dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
+		gptmr_enable_irq(gptmr_info.ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info.cap_ch));
+		gptmr_start_counter(gptmr_info.ptr, gptmr_info.cap_ch);
+    }
+
+    /* capture */
+    if (gptmr_check_status(gptmr_info.ptr, GPTMR_CH_CAP_STAT_MASK(gptmr_info.cap_ch))) {
+        gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CAP_STAT_MASK(gptmr_info.cap_ch)); /* clear capture status */
+        gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cap_ch);        /* stop counter */
+        gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cap_ch); /* clear counter */
+        gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info.cap_ch)); /* disable capture irq */
+		if (data->dma_rxinfo.current_mode == 0) {
+			/* config dma to transfer uart rx data */
+			uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf, data->dma_rxinfo.current_total_size);
+			dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+			data->dma_rxinfo.current_mode = 1;
+		}
+        /* start gptmr cmp for rx idle detection */
+        gptmr_enable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0));
+        gptmr_start_counter(gptmr_info.ptr, gptmr_info.cmp_ch);
+    }
+}
+
+static void uart_hpm_timer_isr(const struct device *dev)
+{
+	gptmr_detect_uart_rx_idle_handler(dev);
+}
+#endif
+
 static int uart_hpm_dma_replace_rx_buffer(const struct device *dev)
 {
 	struct uart_hpm_data * data = dev->data;
+#if !HPM_UART_HW_RX_IDLE
+    gptmr_info_t gptmr_info = data->gptmr_info;
+#else
+	int ret;
+#endif
 	unsigned int key = irq_lock();
 
 	if (data->dma_rxinfo.next_dst_addr != NULL) {
-		/*
-		 * current buffer 收满时走到这里：停止旧 DMA，把
-		 * 预登记的 next 提升为 current 并清零 offset。先启动新的 current，再向
-		 * 应用请求下一块备用 buffer，缩短 UART 只能依赖硬件 FIFO 的窗口。
-		 */
+#if !HPM_UART_HW_RX_IDLE
+		gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0)); /* clear cmp status */
+		gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch); /* stop counter */
+		gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cmp_ch); /* clear counter */
+		gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0)); /* disable cmp irq */
+#endif
 		dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
 		data->dma_rxinfo.current_buf = data->dma_rxinfo.next_dst_addr;
 		data->dma_rxinfo.current_total_size = data->dma_rxinfo.next_buff_size;
@@ -691,9 +809,23 @@ static int uart_hpm_dma_replace_rx_buffer(const struct device *dev)
 		data->dma_rxinfo.next_buff_size = 0;
 		data->dma_rxinfo.current_mode = 0;
 		data->dma_rxinfo.current_offset = 0;
-		uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf, data->dma_rxinfo.current_total_size);
-		dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+#if HPM_UART_HW_RX_IDLE
+		ret = uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf,
+					   data->dma_rxinfo.current_total_size);
+		if (ret == 0) {
+			ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+		}
+		if (ret != 0) {
+			async_evt_rx_buf_release(dev, data->dma_rxinfo.current_buf);
+			data->dma_rxinfo.current_buf = NULL;
+			irq_unlock(key);
+			return ret;
+		}
 		data->dma_rxinfo.current_mode = 1;
+#else
+		gptmr_enable_irq(gptmr_info.ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info.cap_ch));
+		gptmr_start_counter(gptmr_info.ptr, gptmr_info.cap_ch);
+#endif
 		async_evt_rx_buf_request(dev);
 		irq_unlock(key);
 		return 0;
@@ -701,16 +833,6 @@ static int uart_hpm_dma_replace_rx_buffer(const struct device *dev)
 		irq_unlock(key);
 		return -EFAULT;
 	}
-}
-
-static void uart_hpm_handle_rx_timeout(const struct device *dev)
-{
-	struct uart_hpm_data *data = dev->data;
-
-	/* 冻结 DMA 计数，发布已经到达 current buffer 的新字节，再继续接收。 */
-	dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
-	uart_hpm_async_rx_flush(dev);
-	dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
 }
 
 static int uart_hpm_callback_set(const struct device *dev, uart_callback_t callback,
@@ -724,210 +846,37 @@ static int uart_hpm_callback_set(const struct device *dev, uart_callback_t callb
 	return 0;
 }
 
-int uart_hpm_rx_line_idle_enable(const struct device *dev)
-{
-	const struct uart_hpm_cfg *cfg = dev->config;
-	struct uart_hpm_data *data = dev->data;
-	if (!cfg->async_capable) return -ENOTSUP;
-	unsigned int key = irq_lock();
-	if (data->rx_circular_mode || data->dma_rxinfo.current_mode) {
-		irq_unlock(key);
-		return -EBUSY;
-	}
-	uart_fifo_ctrl_t fifo = {0};
-	fifo.fifo_enable = true;
-	fifo.dma_enable = true;
-	fifo.rx_fifo_level = uart_rx_fifo_trg_not_empty;
-	fifo.tx_fifo_level = uart_tx_fifo_trg_not_full;
-	uart_config_fifo_ctrl(cfg->base, &fifo);
-	uart_disable_irq(cfg->base, uart_intr_rx_data_avail_or_timeout);
-	data->rx_line_idle_mode = true;
-	irq_unlock(key);
-	return 0;
-}
-
-int uart_hpm_rx_line_idle_flush(const struct device *dev)
-{
-	struct uart_hpm_data *data = dev->data;
-	struct dma_status status;
-	unsigned int key = irq_lock();
-	int ret = -EAGAIN;
-	uint32_t generation = data->rx_generation;
-	if (!data->rx_line_idle_mode || data->rx_circular_mode ||
-	    !data->dma_rxinfo.current_mode) goto out;
-	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &status);
-	if (ret) goto out;
-	// TC may be pending at the PLIC. Let its callback own release/replacement.
-	if (!status.busy || !status.pending_length) { ret = -EAGAIN; goto out; }
-	ret = dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
-	if (ret) goto out;
-	__asm__ volatile ("fence iorw, iorw" ::: "memory");
-	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &status);
-	if (!ret && status.pending_length && status.busy) {
-		uint32_t total = data->dma_rxinfo.current_total_size;
-		uint32_t offset = data->dma_rxinfo.current_offset;
-		if (status.pending_length > total || total - status.pending_length < offset) {
-			ret = -EIO;
-		} else {
-			// Manufacturer software-idle sequence: disable -> count -> copy.
-			// The fence orders MMIO; it is not an independent DMA drain proof.
-			data->dma_rxinfo.current_size = total - status.pending_length - offset;
-			ret = data->dma_rxinfo.current_size;
-			async_evt_rx_rdy(dev);
-		}
-		// A synchronous callback may disable/restart RX. Never resume a stale
-		// transfer over a new session configured by that callback.
-		if (generation == data->rx_generation && data->dma_rxinfo.current_mode) {
-			int resume = dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
-			if (resume) ret = resume;
-		}
-	} else if (!ret) {
-		ret = -EAGAIN;
-	}
-	// On a status-query error, leave the transfer suspended and report it;
-	// do not restart a channel with unknown terminal-count state.
-out:
-	irq_unlock(key);
-	return ret;
-}
-
-int uart_hpm_rx_circular_enable(const struct device *dev, uint8_t *buffer, size_t size)
-{
-	struct uart_hpm_data *data;
-	const struct uart_hpm_cfg *config;
-	struct dma_block_config *block;
-	volatile uint8_t discard;
-	unsigned int key;
-	int rc;
-
-	if ((dev == NULL) || (buffer == NULL) || (size == 0U)) {
-		return -EINVAL;
-	}
-	data = dev->data;
-	config = dev->config;
-	if (!config->async_capable) {
-		return -ENOTSUP;
-	}
-
-	key = irq_lock();
-	if ((data->dma_rxinfo.current_mode != 0U) || data->rx_circular_mode) {
-		irq_unlock(key);
-		return -EBUSY;
-	}
-
-	/* 启动前清掉旧 FIFO 数据和 overrun 状态，ring 的第 0 字节成为新边界。 */
-	uart_reset_rx_fifo(config->base);
-	while ((config->base->LSR & UART_LSR_OE_MASK) ||
-	       (config->base->LSR & UART_LSR_DR_MASK)) {
-		discard = config->base->RBR & UART_RBR_RBR_MASK;
-	}
-	block = &data->dma_rx.dma_blk_cfg;
-	memset(block, 0, sizeof(*block));
-	block->source_address = (uint32_t)&config->base->RBR;
-	block->dest_address = (uint32_t)buffer;
-	block->source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
-	block->dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
-	block->block_size = size;
-
-	data->dma_rx.dma_cfg.channel_direction = PERIPHERAL_TO_MEMORY;
-	data->dma_rx.dma_cfg.source_burst_length = 1U;
-	data->dma_rx.dma_cfg.block_count = 1U;
-	data->dma_rx.dma_cfg.head_block = block;
-	data->dma_rx.dma_cfg.user_data = data;
-	data->dma_rx.dma_cfg.dma_callback = NULL;
-	data->dma_rx.dma_cfg.cyclic = 1U;
-
-	rc = dma_config(data->dma_rx.dma_dev, data->dma_rx.channel,
-			&data->dma_rx.dma_cfg);
-	if (rc == 0) {
-		rc = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
-	}
-	if (rc != 0) {
-		data->dma_rx.dma_cfg.cyclic = 0U;
-		data->dma_rx.dma_cfg.dma_callback = uart_hpm_dma_callback;
-		irq_unlock(key);
-		return rc;
-	}
-
-	data->dma_rxinfo.current_buf = buffer;
-	data->dma_rxinfo.current_total_size = size;
-	data->dma_rxinfo.current_mode = 1U;
-	data->rx_circular_mode = true;
-	uart_enable_irq(config->base, uart_intr_rx_data_avail_or_timeout);
-	irq_unlock(key);
-	return 0;
-}
-
-int uart_hpm_rx_circular_get_position(const struct device *dev, size_t *position)
-{
-	struct uart_hpm_data *data;
-	struct dma_status status = {0};
-	int rc;
-
-	if ((dev == NULL) || (position == NULL)) {
-		return -EINVAL;
-	}
-	data = dev->data;
-	if (!data->rx_circular_mode) {
-		return -EACCES;
-	}
-	rc = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &status);
-	if (rc == 0) {
-		*position = status.write_position;
-	}
-	return rc;
-}
-
-int uart_hpm_rx_circular_disable(const struct device *dev)
-{
-	struct uart_hpm_data *data;
-	const struct uart_hpm_cfg *config;
-	unsigned int key;
-
-	if (dev == NULL) {
-		return -EINVAL;
-	}
-	data = dev->data;
-	config = dev->config;
-	if (!data->rx_circular_mode) {
-		return 0;
-	}
-
-	key = irq_lock();
-	uart_disable_irq(config->base, uart_intr_rx_data_avail_or_timeout);
-	dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
-	data->rx_circular_mode = false;
-	data->dma_rxinfo.current_mode = 0U;
-	data->dma_rxinfo.current_buf = NULL;
-	data->dma_rxinfo.current_total_size = 0U;
-	data->dma_rx.dma_cfg.cyclic = 0U;
-	data->dma_rx.dma_cfg.dma_callback = uart_hpm_dma_callback;
-	irq_unlock(key);
-	return 0;
-}
-
 static int uart_hpm_tx(const struct device *dev, const uint8_t *buf, size_t len,
 			  int32_t timeout_us)
 {
 	int stat;
 	struct uart_hpm_data *data = dev->data;
 	const struct uart_hpm_cfg *config = dev->config;
-	UART_Type *uart_base = config->base;
 
-	if (!config->async_capable) {
+	if (!config->dma_enabled) {
 		return -ENOTSUP;
 	}
-
-	uart_reset_tx_fifo(uart_base);
+	if (buf == NULL || len == 0U) {
+		return -EINVAL;
+	}
+	if (data->dma_txinfo.dst_addr != NULL) {
+		return -EBUSY;
+	}
 	data->dma_txinfo.dst_addr = (uint8_t *)buf;
 	data->dma_txinfo.buff_size = len;
 	data->dma_txinfo.dev = (struct device*)dev;
     /* Sending data for the first time */
 	stat = uart_hpm_dma_tx_load(dev, buf, len);
 	if (stat) {
+		data->dma_txinfo.dst_addr = NULL;
+		data->dma_txinfo.buff_size = 0;
 		return stat;
 	}
 	stat = dma_start(data->dma_tx.dma_dev, data->dma_tx.channel);
+	if (stat) {
+		data->dma_txinfo.dst_addr = NULL;
+		data->dma_txinfo.buff_size = 0;
+	}
 	return stat;
 }
 
@@ -935,13 +884,11 @@ static int uart_hpm_tx_abort(const struct device *dev)
 {
 	int stat;
 	struct uart_hpm_data *data = dev->data;
-	const struct uart_hpm_cfg *config = dev->config;
 	uint32_t len;
 
-	if (!config->async_capable) {
-		return -ENOTSUP;
+	if (data->dma_txinfo.dst_addr == NULL) {
+		return -EFAULT;
 	}
-
 	stat = dma_suspend(data->dma_tx.dma_dev, data->dma_tx.channel);
 	if (stat) {
 		LOG_ERR("ERR dma suspend error.\r\n");
@@ -959,6 +906,8 @@ static int uart_hpm_tx_abort(const struct device *dev)
 		return stat;
 	}
 	async_user_callback(dev, &tx_aborted_event);
+	data->dma_txinfo.dst_addr = NULL;
+	data->dma_txinfo.buff_size = 0;
 
 	return 0;
 }
@@ -970,48 +919,77 @@ static int uart_hpm_rx_enable(const struct device *dev, uint8_t *buf, const size
 	const struct uart_hpm_cfg *config = dev->config;
 	UART_Type *uart_base = config->base;
 	volatile uint8_t buff;
-
-	if (!config->async_capable) {
+	int ret;
+#if HPM_UART_HW_RX_IDLE
+	uart_rxline_idle_config_t idle_cfg = {
+		.detect_enable = timeout_us != SYS_FOREVER_US,
+		.detect_irq_enable = timeout_us != SYS_FOREVER_US,
+		.idle_cond = uart_rxline_idle_cond_rxline_logic_one,
+	};
+	uint64_t threshold;
+#endif
+	if (!config->dma_enabled) {
 		return -ENOTSUP;
 	}
+	if (buf == NULL || len == 0U) {
+		return -EINVAL;
+	}
+	if (data->dma_rxinfo.current_buf != NULL) {
+		return -EBUSY;
+	}
+#if HPM_UART_HW_RX_IDLE
+	if (timeout_us != SYS_FOREVER_US) {
+		threshold = ((uint64_t)MAX(timeout_us, 1) *
+			     data->uart_config.baudrate + 999999U) / 1000000U;
+		if (threshold > UINT8_MAX) {
+			return -ENOTSUP;
+		}
+		idle_cfg.threshold = MAX(threshold, 1U);
+	}
+#endif
 
 	unsigned int key = irq_lock();
-	++data->rx_generation;
 
-	/* 记录应用提供的第一个 buffer，它将成为 current DMA buffer。 */
 	data->dma_rxinfo.dst_addr = buf;
 	data->dma_rxinfo.buff_size = len;
 	data->dma_rxinfo.next_dst_addr = NULL;
 	data->dma_rxinfo.next_buff_size = 0;
 	data->dma_rxinfo.current_mode = 0;
-	/*
-	 * 当前驱动只保存该 API 参数，没有用它配置寄存器；FIFO 尾数 DMA request
-	 * 和 RX timeout 中断采用 UART 硬件定义的 4 字节时间条件。
-	 */
 	data->idle_time_out_us = timeout_us;
 	data->dma_rxinfo.current_offset = 0;
 	data->dma_rxinfo.current_buf = data->dma_rxinfo.dst_addr;
 	data->dma_rxinfo.current_total_size = data->dma_rxinfo.buff_size;
 	data->dma_rxinfo.current_size = 0;
 	data->dma_rxinfo.dev = (struct device *)dev;
-	/* 启动新会话前清空 UART RX FIFO/溢出状态，避免把旧字节混入新 buffer。 */
 	uart_reset_rx_fifo(uart_base);
 	while ((uart_base->LSR & UART_LSR_OE_MASK) || \
 			(uart_base->LSR & UART_LSR_DR_MASK)) {
 		buff = uart_base->RBR & UART_RBR_RBR_MASK;
 	}
-	/*
-	 * 在启动第一个 DMA 前同步请求 next buffer。应用通常在这个回调里调用
-	 * uart_rx_buf_rsp()，这样 current 收满时驱动已有备用 buffer 可切换。
-	 */
-	async_evt_rx_buf_request(dev);
-	if (!data->rx_line_idle_mode)
-		uart_enable_irq(uart_base, uart_intr_rx_data_avail_or_timeout);
-	/* 配置并启动 UART FIFO -> current buffer 的第一笔 DMA 传输。 */
-	uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf, data->dma_rxinfo.current_total_size);
-	dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+#if HPM_UART_HW_RX_IDLE
+	uart_clear_rxline_idle_flag(uart_base);
+	uart_init_rxline_idle_detection(uart_base, idle_cfg);
+#else
+	config_gptmr_to_detect_uart_rx_start(&data->gptmr_info, &data->trgm_info);
+    config_gptmr_to_detect_uart_rx_idle(&data->gptmr_info, &data->trgm_info, data->idle_time_out_us);
+#endif
+	ret = uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf,
+				   data->dma_rxinfo.current_total_size);
+	if (ret == 0) {
+		ret = dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+	}
+	if (ret != 0) {
+		data->dma_rxinfo.current_buf = NULL;
+#if HPM_UART_HW_RX_IDLE
+		uart_disable_rxline_idle_detection(uart_base);
+		uart_disable_irq(uart_base, uart_intr_rx_line_idle);
+#endif
+		irq_unlock(key);
+		return ret;
+	}
 	data->dma_rxinfo.current_mode = 1;
 	irq_unlock(key);
+	async_evt_rx_buf_request(dev);
 
 	return 0;
 }
@@ -1019,30 +997,16 @@ static int uart_hpm_rx_enable(const struct device *dev, uint8_t *buf, const size
 static int mcux_lpuart_rx_buf_rsp(const struct device *dev, uint8_t *buf, size_t len)
 {
 	struct uart_hpm_data *data = dev->data;
-	const struct uart_hpm_cfg *config = dev->config;
-	unsigned int key;
-
-	if (!config->async_capable) {
-		return -ENOTSUP;
+	if (data->dma_rxinfo.current_buf == NULL ||
+	    data->dma_rxinfo.next_dst_addr != NULL) {
+		return -EBUSY;
 	}
-
-	if ((buf == NULL) || (len == 0U)) {
+	if (buf == NULL || len == 0U) {
 		return -EINVAL;
 	}
 
-	/*
-	 * next buffer 可能由应用线程提交，需要和 UART/DMA ISR 串行化，
-	 * 不能依赖无锁 assert。
-	 */
-	key = irq_lock();
-	if (data->dma_rxinfo.next_dst_addr != NULL) {
-		irq_unlock(key);
-		return -EBUSY;
-	}
-	/* 这里只登记 next；current 收满或 timeout-switch 时才提升并启动它。 */
 	data->dma_rxinfo.next_dst_addr = buf;
 	data->dma_rxinfo.next_buff_size = len;
-	irq_unlock(key);
 
 	return 0;
 }
@@ -1059,17 +1023,21 @@ static void uart_hpm_dma_callback(const struct device *dev, void *arg, uint32_t 
 			/* this part of the transfer ends */
 			async_evt_tx_done(data->dma_txinfo.dev);
 		} else if (channel == data->dma_rx.channel) {
-			/*
-			 * 路径二：current DMA buffer 已收满。
-			 * 先 flush 尚未发布的尾部并同步产生 UART_RX_RDY，再通知旧 buffer
-			 * released，最后切换到 next buffer 并重新启动 DMA。
-			 */
+			/* this part of the transfer ends */
 			uart_hpm_async_rx_flush(data->dma_rxinfo.dev);
-			// A prior idle event may have already published the final byte.
-			// Completion still releases the buffer exactly once.
-			async_evt_rx_buf_release(data->dma_rxinfo.dev);
+			async_evt_rx_buf_release(data->dma_rxinfo.dev,
+						 data->dma_rxinfo.current_buf);
 			if (uart_hpm_dma_replace_rx_buffer(data->dma_rxinfo.dev) != 0) {
-				uart_hpm_rx_disable(data->dma_rxinfo.dev);
+				const struct uart_hpm_cfg *cfg = data->dma_rxinfo.dev->config;
+#if HPM_UART_HW_RX_IDLE
+				uart_disable_rxline_idle_detection(cfg->base);
+				uart_disable_irq(cfg->base, uart_intr_rx_line_idle);
+#endif
+				ARG_UNUSED(cfg);
+				dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
+				data->dma_rxinfo.current_buf = NULL;
+				struct uart_event evt = { .type = UART_RX_DISABLED };
+				async_user_callback(data->dma_rxinfo.dev, &evt);
 			}
 		} else {
 			LOG_ERR("DMA callback channel %d is not valid.",
@@ -1114,16 +1082,28 @@ static const struct uart_driver_api uart_hpm_driver_api = {
 };
 
 
-#define UART_HPMICRO_IRQ_FLAGS(n) 0
+#define UART_HPMICRO_IRQ_FLAGS_SENSE0(n) 0
+#define UART_HPMICRO_IRQ_FLAGS_SENSE1(n) DT_INST_IRQ(n, sense)
+#define UART_HPMICRO_IRQ_FLAGS(n) \
+	_CONCAT(UART_HPMICRO_IRQ_FLAGS_SENSE, \
+	DT_INST_IRQ_HAS_CELL(n, sense))(n)
 
-#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+#if defined(CONFIG_UART_INTERRUPT_DRIVEN) || (defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE)
 #define DEV_CONFIG_IRQ_FUNC_INIT(n) \
 	.irq_config_func = irq_config_func##n,
-#define DEV_CONFIG_IRQ_NUM_INIT(n) \
-	.irq_num = DT_INST_IRQN(n),
 #define UART_HPMICRO_IRQ_FUNC_DECLARE(n) \
 	static void irq_config_func##n(const struct device *dev);
-#ifndef CONFIG_UART_ASYNC_API
+#if defined(CONFIG_UART_ASYNC_API) && HPM_UART_HW_RX_IDLE
+#define UART_HPMICRO_IRQ_FUNC_DEFINE(n) \
+	static void irq_config_func##n(const struct device *dev) \
+	{ \
+		ARG_UNUSED(dev); \
+		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), \
+			uart_hpm_isr, DEVICE_DT_INST_GET(n), \
+			UART_HPMICRO_IRQ_FLAGS(n)); \
+		irq_enable(DT_INST_IRQN(n)); \
+	}
+#elif !defined(CONFIG_UART_ASYNC_API)
 #define UART_HPMICRO_IRQ_FUNC_DEFINE(n)	\
 	static void irq_config_func##n(const struct device *dev)	\
 	{	\
@@ -1134,47 +1114,54 @@ static const struct uart_driver_api uart_hpm_driver_api = {
 		irq_enable(DT_INST_IRQN(n));	\
 	}
 #else /* CONFIG_UART_ASYNC_API */
-#define UART_HPMICRO_IRQ_FUNC_DEFINE_SYNC(n)	\
+#define UART_HPMICRO_IRQ_FUNC_DEFINE(n)	\
 	static void irq_config_func##n(const struct device *dev)	\
 	{	\
-		const struct uart_hpm_cfg *cfg = dev->config;	\
-		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority),	\
+		ARG_UNUSED(dev);	\
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, uart, irq), \
+		DT_INST_IRQ_BY_NAME(n, uart, priority),	\
 		uart_hpm_isr, DEVICE_DT_INST_GET(n),	\
 		UART_HPMICRO_IRQ_FLAGS(n));		\
-		if (!cfg->async_capable) {	\
-			irq_enable(DT_INST_IRQN(n));	\
-		}	\
+		irq_enable(DT_INST_IRQ_BY_NAME(n, uart, irq));	\
+		\
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, idletimer, irq), \
+		DT_INST_IRQ_BY_NAME(n, idletimer, priority),	\
+		uart_hpm_timer_isr, DEVICE_DT_INST_GET(n),	\
+		UART_HPMICRO_IRQ_FLAGS(n));		\
+		irq_enable(DT_INST_IRQ_BY_NAME(n, idletimer, irq));	\
 	}
-
-#define UART_HPMICRO_IRQ_FUNC_DEFINE(n)	\
-	UART_HPMICRO_IRQ_FUNC_DEFINE_SYNC(n)
 
 #endif /* !CONFIG_UART_ASYNC_API */
 
 #else /* !CONFIG_UART_INTERRUPT_DRIVEN */
 #define DEV_CONFIG_IRQ_FUNC_INIT(n)
-#define DEV_CONFIG_IRQ_NUM_INIT(n)
 #define UART_HPMICRO_IRQ_FUNC_DECLARE(n)
 #define UART_HPMICRO_IRQ_FUNC_DEFINE(n)
-#endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+#endif /* CONFIG_UART_INTERRUPT_DRIVEN || CONFIG_UART_ASYNC_API */
 
 #ifdef CONFIG_UART_ASYNC_API
-#define UART_HPMICRO_ASYNC_CAPABLE(n) \
-	UTIL_AND(DT_INST_DMAS_HAS_NAME(n, rx), DT_INST_DMAS_HAS_NAME(n, tx))
-#define UART_HPMICRO_ASYNC_CAPABLE_INIT(n) \
-		.async_capable = UART_HPMICRO_ASYNC_CAPABLE(n),
 #define UART_HPMICRO_ASYNC_DATA_INIT(n)	\
-	COND_CODE_1(UART_HPMICRO_ASYNC_CAPABLE(n), (\
 		.uart_rx_idle = false,	\
 		.uart_receive_data_size = 0,	\
 		.uart_info = {	\
 					.ptr = (UART_Type *)DT_INST_REG_ADDR(n),	\
 					.baudrate = DT_INST_PROP(n, current_speed),	\
 		},	\
-	), ())
+		.trgm_info = {	\
+                .ptr = (TRGM_Type *)DT_INST_PROP_OR(n, uart_idle_trgm_reg, 0),	\
+                .pin_index = DT_INST_PROP_OR(n, uart_idle_trgm_pin, 0),	\
+                .input_src = DT_INST_PROP_OR(n, uart_idle_trgm_input_src, 0),	\
+                .output_gptmr_in = DT_INST_PROP_OR(n, uart_idle_trgm_output_gptmr_in, 0),	\
+                .output_gptmr_synci = DT_INST_PROP_OR(n, uart_idle_trgm_output_gptmr_sync, 0),	\
+    	},	\
+		.gptmr_info = {	\
+                .ptr = (GPTMR_Type *)DT_INST_PROP_OR(n, uart_idle_gptmr_reg, 0),	\
+                .clock_name = DT_INST_PROP_OR(n, uart_idle_gptmr_clock_name, 0),	\
+                .cmp_ch = 0,	\
+                .cap_ch = 2,	\
+    	},
 
-#define UART_DMA_CHANNELS_DATA_INIT(n)		\
-	COND_CODE_1(UART_HPMICRO_ASYNC_CAPABLE(n), (\
+#define UART_DMA_CHANNELS_DATA_INIT_(n)		\
 		.dma_tx = {						\
 			.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR_BY_NAME(n, tx)), \
 			.channel =					\
@@ -1200,11 +1187,12 @@ static const struct uart_driver_api uart_hpm_driver_api = {
 				.block_count = 1,		\
 				.dma_slot = DT_INST_DMAS_CELL_BY_NAME(n, rx, source) \
 			}							\
-		},	\
-	), ())
+		},
+
+#define UART_DMA_CHANNELS_DATA_INIT(n) \
+	COND_CODE_1(DT_INST_DMAS_HAS_NAME(n, tx), (UART_DMA_CHANNELS_DATA_INIT_(n)), ())
 
 #else
-#define UART_HPMICRO_ASYNC_CAPABLE_INIT(n)
 #define UART_HPMICRO_ASYNC_DATA_INIT(n)
 #define UART_DMA_CHANNELS_DATA_INIT(n)
 #endif
@@ -1224,15 +1212,13 @@ static const struct uart_driver_api uart_hpm_driver_api = {
 			.clock_name = DT_INST_CLOCKS_CELL(n, name),	\
 			.clock_src = DT_INST_CLOCKS_CELL(n, src),	\
 			.parity = DT_INST_ENUM_IDX_OR(n, parity, UART_CFG_PARITY_NONE),	\
-			.stop_bits = DT_INST_ENUM_IDX_OR(n, stop_bits, UART_CFG_STOP_BITS_1),	\
-			.data_bits = DT_INST_ENUM_IDX_OR(n, data_bits, UART_CFG_DATA_BITS_8),	\
 			.loopback_en = DT_INST_PROP(n, loopback),				\
+			IF_ENABLED(CONFIG_UART_ASYNC_API, \
+				(.dma_enabled = DT_INST_DMAS_HAS_NAME(n, tx),)) \
 			.baud_rate = DT_INST_PROP(n, current_speed),	\
 			.flow_ctrl = DT_INST_PROP(n, hw_flow_control) ?				\
 			UART_CFG_FLOW_CTRL_RTS_CTS : UART_CFG_FLOW_CTRL_NONE,		\
-			UART_HPMICRO_ASYNC_CAPABLE_INIT(n)	\
 			DEV_CONFIG_IRQ_FUNC_INIT(n)		\
-			DEV_CONFIG_IRQ_NUM_INIT(n)		\
 			PINCTRL_INIT(n)		\
 		};	\
 		DEVICE_DT_INST_DEFINE(n, uart_hpm_init,	\

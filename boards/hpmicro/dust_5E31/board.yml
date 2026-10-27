@@ -1,0 +1,5 @@
+board:
+  name: dust_5E31
+  vendor: hpmicro
+  socs:
+    - name: hpm5e31

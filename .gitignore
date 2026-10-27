@@ -3,6 +3,9 @@ build
 cmake-build*
 .vscode
 
+west.yml
+west_gitee.yml
+
 *.pyc
 sec_core_img.c
 *.o

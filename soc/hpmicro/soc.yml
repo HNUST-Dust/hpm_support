@@ -7,6 +7,10 @@ family:
     - name: hpm5321
     - name: hpm5331
     - name: hpm5361
+  - name: hpm5e00
+    socs:
+    - name: hpm5e31
+    - name: hpm5e3y
   - name: hpm6200
     socs:
     - name: hpm6240
@@ -31,6 +35,4 @@ family:
     - name: hpm6e50
     - name: hpm6e80
     - name: hpm6e8y
-  - name: hpm5e00
-    socs:
-    - name: hpm5e31
+

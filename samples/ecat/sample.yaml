@@ -1,0 +1,5 @@
+sample:
+  name: ecat
+  description: HPM5E31 EtherCAT slave controller (SSC) loopback sample
+  platforms:
+    - dust_5E31
