@@ -17,10 +17,21 @@ config UART_HPMICRO
 	help
 	  This option enables the UART driver for HPM SoC family.
 
+config UART_HPMICRO_RX_NATIVE_IDLE
+	bool "Native UART RX idle publication for partial async DMA buffers"
+	default y if SOC_SERIES_HPM5E00
+	depends on SOC_SERIES_HPM5E00 && UART_HPMICRO && UART_ASYNC_API && UART_INTERRUPT_DRIVEN
+	help
+	  Use the UART hardware RX idle detector and IIR2 status on HPM5E00.
+	  uart_rx_enable timeout is rounded up to bit times (1..255 bits).
+	  Unrepresentable finite timeouts fail; SYS_FOREVER_US disables idle.
+	  No external GPTMR/TRGM detector or board-specific RX wiring is needed.
+
 config UART_HPMICRO_RX_LINE_IDLE
 	bool "UART10 partial RX publication by external line-idle detection"
 	default y if BOARD_DUST_HPM6750
 	depends on UART_HPMICRO && UART_ASYNC_API && UART_INTERRUPT_DRIVEN
+	depends on !UART_HPMICRO_RX_NATIVE_IDLE
 	help
 	  Publish the partially filled UART10 RX DMA buffer after the RX line has
 	  been idle for the configured interval. The Dust V3 DBUS RX signal reaches

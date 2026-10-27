@@ -31,6 +31,9 @@ int uart_hpm_rx_circular_get_position(const struct device *dev, size_t *position
 int uart_hpm_rx_circular_disable(const struct device *dev);
 
 /** Select external RX-line idle notification before finite async RX starts.
+ * HPM5E00 native idle is configured automatically by uart_rx_enable() when
+ * CONFIG_UART_HPMICRO_RX_NATIVE_IDLE is enabled; no external detector setup
+ * is required for that path.
  * Sets RFIFOT=0 and suppresses FIFO RX IRQs; the board owns the idle detector.
  */
 int uart_hpm_rx_line_idle_enable(const struct device *dev);
