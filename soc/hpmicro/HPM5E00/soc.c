@@ -43,8 +43,20 @@ static void soc_init_clock(void)
 	clock_add_to_group(clock_gpio, 0);
 	clock_add_to_group(clock_pwm0, 0);
 	clock_connect_group_to_cpu(0, 0);
-	pcfg_dcdc_set_voltage(HPM_PCFG, 1200);
+	/* Use the oscillator while changing PLL0, including after a warm reset. */
+	clock_set_source_divider(clock_cpu0, clk_src_osc24m, 1);
+	/* Match the HPM SDK HPM5E00EVK supply setup for its 480 MHz target. */
+	pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
+	pcfg_dcdc_switch_to_dcm_mode(HPM_PCFG);
+	/* PLL0CLK0 = 480 MHz; PLL0CLK1 = 400 MHz. */
+	pllctlv2_set_postdiv(HPM_PLLCTLV2, pllctlv2_pll0,
+			     pllctlv2_clk0, pllctlv2_div_1p0);
+	pllctlv2_set_postdiv(HPM_PLLCTLV2, pllctlv2_pll0,
+			     pllctlv2_clk1, pllctlv2_div_1p2);
+	pllctlv2_init_pll_with_freq(HPM_PLLCTLV2, pllctlv2_pll0, 480000000UL);
 	clock_set_source_divider(clock_cpu0, clk_src_pll0_clk0, 1);
+	clock_update_core_clock();
+	/* Zephyr's machine timer remains at 24 MHz, independent of CPU0. */
 	clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
 }
 

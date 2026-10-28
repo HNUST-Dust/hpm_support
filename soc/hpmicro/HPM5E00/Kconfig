@@ -23,6 +23,23 @@ config SOC_HPM5E31
 
 if SOC_SERIES_HPM5E00
 
+choice
+	prompt "FPU options"
+	default HPM5E_NO_FPU
+
+config HPM5E_NO_FPU
+	bool "No FPU"
+
+config HPM5E_SINGLE_PRECISION_FPU
+	bool "Single precision FPU"
+	select CPU_HAS_FPU
+
+config HPM5E_DOUBLE_PRECISION_FPU
+	bool "Double precision FPU"
+	select CPU_HAS_FPU_DOUBLE_PRECISION
+
+endchoice
+
 config SOC_ANDES_V5_PMA
 	bool "Andes V5 Physical Memory Attribute (PMA)"
 	default y
