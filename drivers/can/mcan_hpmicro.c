@@ -23,6 +23,7 @@
 #include "hpm_clock_drv.h"
 #include <drivers/can/hpmicro_mcan_batch.h>
 #include "hpm_mcan_tx_state.h"
+#include <drivers/can/hpmicro_mcan_timing.h>
 
 #define HPM_CAN_EXT_FILTER_NUM_MAX (64U)
 #define HPM_CAN_STD_FILTER_NUM_MAX (128U)
@@ -71,6 +72,9 @@ struct hpm_mcan_config {
 
 struct hpm_mcan_data {
     struct can_driver_data common;
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    struct hpm_mcan_rx_timing rx_timing;
+#endif
     /* MCAN configuration */
     mcan_config_t config;
     uint32_t ext_filter_count;
@@ -150,6 +154,34 @@ static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
     return filter_index;
 }
 
+const struct hpm_mcan_rx_timing *hpm_mcan_last_rx_timing(const struct device *dev)
+{
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    if (!dev) return NULL;
+    const struct hpm_mcan_data *data = dev->data;
+    return &data->rx_timing;
+#else
+    ARG_UNUSED(dev);
+    return NULL;
+#endif
+}
+
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+static void hpm_mcan_sample_rx_timing(const struct device *dev, uint32_t fifo_status)
+{
+    const struct hpm_mcan_config *cfg = dev->config;
+    struct hpm_mcan_data *data = dev->data;
+    struct hpm_mcan_rx_timing *t = &data->rx_timing;
+    t->fifo_status = fifo_status;
+    t->tscc = cfg->base->TSCC;
+    t->rx_timestamp = s_can_rx_buf.rx_timestamp;
+    t->nominal_bitrate = data->config.baudrate;
+    t->sample_before_cycles = k_cycle_get_64();
+    t->counter = mcan_get_timestamp_counter_value(cfg->base);
+    t->sample_after_cycles = k_cycle_get_64();
+}
+#endif
+
 /* Get MCAN message from RX BUF */
 static void hpm_mcan_get_message_from_rxbuf(const struct device *dev, uint32_t buf_index)
 {
@@ -161,6 +193,9 @@ static void hpm_mcan_get_message_from_rxbuf(const struct device *dev, uint32_t b
     void *cb_arg;
     memset(&s_can_rx_buf, 0, sizeof(s_can_rx_buf));
     mcan_read_rxbuf(can, buf_index, (mcan_rx_message_t *) &s_can_rx_buf);
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    hpm_mcan_sample_rx_timing(dev, 0xffffffffU);
+#endif
 
     uint32_t filter_index = hpm_mcan_get_first_filter_index(&s_can_rx_buf, data);
     memset(&frame, 0, sizeof(frame));
@@ -225,7 +260,13 @@ static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t 
     struct can_frame frame;
     void *cb_arg;
     memset(&s_can_rx_buf, 0, sizeof(s_can_rx_buf));
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    const uint32_t fifo_status = fifo_index ? can->RXF1S : can->RXF0S;
+#endif
     mcan_read_rxfifo(can, fifo_index, (mcan_rx_message_t *) &s_can_rx_buf);
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    hpm_mcan_sample_rx_timing(dev, fifo_status);
+#endif
 
     uint32_t filter_index = hpm_mcan_get_first_filter_index(&s_can_rx_buf, data);
     memset(&frame, 0, sizeof(frame));
@@ -284,7 +325,14 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
 {
     const struct hpm_mcan_config *cfg = dev->config;
     MCAN_Type *can = cfg->base;
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    struct hpm_mcan_data *data = dev->data;
+    data->rx_timing.irq_cycles = k_cycle_get_64();
+#endif
     uint32_t flags = mcan_get_interrupt_flags(can);
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    data->rx_timing.irq_flags = flags;
+#endif
     /* Acknowledge this snapshot before callbacks can submit a new batch. */
     mcan_clear_interrupt_flags(can, flags);
     /* New message is available in RXFIFO0 */
@@ -363,6 +411,13 @@ static int hpm_mcan_init(const struct device *dev)
 #endif
 
     mcan_get_default_config(can, config);
+#if defined(CONFIG_HPM_MCAN_RX_TIMING)
+    /* TSCC.TCP is nominal CAN bit periods (register definition), not AHB.
+     * At 1 Mbps this is 16 us/tick and a 1.048576 s wrap period.
+     */
+    config->timestamp_cfg.counter_prescaler = 16U;
+    config->timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_VALUE_INCREMENT;
+#endif
 
     clock_add_to_group(cfg->clock_name, 0);
 

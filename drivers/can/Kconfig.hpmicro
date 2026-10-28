@@ -31,3 +31,12 @@ config CAN_MAX_FILTER
 	range 1 16
 	help
 	  Maximum number of filters supported by the can_add_rx_callback() API call.
+
+config HPM_MCAN_RX_TIMING
+    bool "MCAN RX hardware timestamp and IRQ timing diagnostics"
+    depends on MCAN_HPMICRO
+    default n
+    help
+      Enable the internal 16-bit timestamp counter with 16 nominal CAN bit
+      periods per tick. Save CPU IRQ-entry and counter-sampling cycles for
+      the RX callback. Classic CAN diagnostic use only; no PDO ABI change.
