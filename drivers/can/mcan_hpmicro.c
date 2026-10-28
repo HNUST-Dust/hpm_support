@@ -125,7 +125,8 @@ static void hpm_mcan_tc_event_handler(const struct device *dev);
 static void hpm_mcan_state_change_handler(const struct device *dev);
 
 /*
- * CAST CAN doesn't support reporting CAN filter index, this function mannually look up the filter index
+ * Match the registered classic mask in software as a second check.
+ * MCAN and Zephyr both use mask bit 1 to compare that identifier bit.
  */
 static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
                                         const struct hpm_mcan_data *data)
@@ -137,7 +138,7 @@ static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
     if (buf->use_ext_id) {
         for (uint32_t i = 0; i < ext_filter_count; i++) {
             const mcan_filter_elem_t *filter = &data->ext_filters[i];
-            if ((buf->ext_id | filter->filter_mask) == (filter->filter_id | filter->filter_mask)) {
+            if ((buf->ext_id & filter->filter_mask) == (filter->filter_id & filter->filter_mask)) {
                 filter_index = i;
                 break;
             }
@@ -145,7 +146,7 @@ static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
     } else {
         for (uint32_t i = 0; i < std_filter_count; i++) {
             const mcan_filter_elem_t *filter = &data->std_filters[i];
-            if ((buf->std_id | filter->filter_mask) == (filter->filter_id | filter->filter_mask)) {
+            if ((buf->std_id & filter->filter_mask) == (filter->filter_id & filter->filter_mask)) {
                 filter_index = i;
                 break;
             }
@@ -192,7 +193,9 @@ static void hpm_mcan_get_message_from_rxbuf(const struct device *dev, uint32_t b
     struct can_frame frame;
     void *cb_arg;
     memset(&s_can_rx_buf, 0, sizeof(s_can_rx_buf));
-    mcan_read_rxbuf(can, buf_index, (mcan_rx_message_t *) &s_can_rx_buf);
+    if (mcan_read_rxbuf(can, buf_index, (mcan_rx_message_t *) &s_can_rx_buf) != status_success) {
+        return;
+    }
 #if defined(CONFIG_HPM_MCAN_RX_TIMING)
     hpm_mcan_sample_rx_timing(dev, 0xffffffffU);
 #endif
@@ -225,7 +228,7 @@ static void hpm_mcan_get_message_from_rxbuf(const struct device *dev, uint32_t b
     }
 
     /* Handle RX filter callback */
-    if (filter_index != -EINVAL) {
+    if (filter_index != (uint32_t)-EINVAL) {
         /* If RTR bit does not match filter RTR mask and bit, drop current frame */
         bool rtr_filter_mask = (data->filter_rtr_mask & BIT(filter_index)) != 0;
         bool rtr_filter = (data->filter_rtr & BIT(filter_index)) != 0;
@@ -251,7 +254,7 @@ static void hpm_mcan_get_message_from_rxbuf(const struct device *dev, uint32_t b
 }
 
 /* Get MCAN message from RX BUF */
-static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t fifo_index)
+static bool hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t fifo_index)
 {
     const struct hpm_mcan_config *cfg = dev->config;
     MCAN_Type *can = cfg->base;
@@ -263,7 +266,9 @@ static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t 
 #if defined(CONFIG_HPM_MCAN_RX_TIMING)
     const uint32_t fifo_status = fifo_index ? can->RXF1S : can->RXF0S;
 #endif
-    mcan_read_rxfifo(can, fifo_index, (mcan_rx_message_t *) &s_can_rx_buf);
+    if (mcan_read_rxfifo(can, fifo_index, (mcan_rx_message_t *) &s_can_rx_buf) != status_success) {
+        return false;
+    }
 #if defined(CONFIG_HPM_MCAN_RX_TIMING)
     hpm_mcan_sample_rx_timing(dev, fifo_status);
 #endif
@@ -296,13 +301,13 @@ static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t 
     }
 
     /* Handle RX filter callback */
-    if (filter_index != -EINVAL) {
+    if (filter_index != (uint32_t)-EINVAL) {
         /* If RTR bit does not match filter RTR mask and bit, drop current frame */
         bool rtr_filter_mask = (data->filter_rtr_mask & BIT(filter_index)) != 0;
         bool rtr_filter = (data->filter_rtr & BIT(filter_index)) != 0;
         bool rtr_in_frame = (frame.flags & CAN_FRAME_RTR);
         if ((rtr_filter_mask != rtr_in_frame) || (rtr_filter != rtr_in_frame)) {
-            return;
+            return true;
         }
 
         if (s_can_rx_buf.use_ext_id) {
@@ -318,6 +323,24 @@ static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t 
         } else {
             LOG_DBG("cb missing");
         }
+    }
+    return true;
+}
+
+/* Drain only the queue occupancy observed at ISR entry. This bounds work by
+ * the hardware FIFO capacity, without waiting for the bus. The ISR already
+ * acknowledged its flags before this call; arrivals during the drain set a new
+ * flag which is deliberately left pending for the next IRQ.
+ */
+static void hpm_mcan_drain_rxfifo(const struct device *dev, uint32_t fifo_index)
+{
+    const struct hpm_mcan_config *cfg = dev->config;
+    MCAN_Type *can = cfg->base;
+    uint32_t pending = fifo_index ? MCAN_RXF1S_F1FL_GET(can->RXF1S)
+                                 : MCAN_RXF0S_F0FL_GET(can->RXF0S);
+    if (pending > 64U) pending = 64U;
+    for (uint32_t n = 0; n < pending; ++n) {
+        if (!hpm_mcan_get_message_from_rxfifo(dev, fifo_index)) break;
     }
 }
 
@@ -337,11 +360,11 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
     mcan_clear_interrupt_flags(can, flags);
     /* New message is available in RXFIFO0 */
     if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) != 0) {
-        hpm_mcan_get_message_from_rxfifo(dev, 0);
+        hpm_mcan_drain_rxfifo(dev, 0);
     }
     /* New message is available in RXFIFO1 */
     if ((flags & MCAN_INT_RXFIFO1_NEW_MSG) != 0U) {
-        hpm_mcan_get_message_from_rxfifo(dev, 1);
+        hpm_mcan_drain_rxfifo(dev, 1);
     }
     /* New message is available in RXBUF */
     if ((flags & MCAN_INT_MSG_STORE_TO_RXBUF) != 0U) {
@@ -411,6 +434,11 @@ static int hpm_mcan_init(const struct device *dev)
 #endif
 
     mcan_get_default_config(can, config);
+    /* Unregistered traffic must not consume RX FIFO capacity. */
+    config->all_filters_config.global_filter_config.accept_non_matching_std_frame_option =
+        MCAN_ACCEPT_NON_MATCHING_FRAME_OPTION_REJECT;
+    config->all_filters_config.global_filter_config.accept_non_matching_ext_frame_option =
+        MCAN_ACCEPT_NON_MATCHING_FRAME_OPTION_REJECT;
 #if defined(CONFIG_HPM_MCAN_RX_TIMING)
     /* TSCC.TCP is nominal CAN bit periods (register definition), not AHB.
      * At 1 Mbps this is 16 us/tick and a 1.048576 s wrap period.
@@ -755,7 +783,7 @@ static int hpm_mcan_add_rx_filter_ext(const struct device *dev,
     filter_ext->filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH;
     filter_ext->can_id_type = MCAN_CAN_ID_TYPE_EXTENDED;
     filter_ext->filter_id = filter->id;
-    filter_ext->filter_mask = ~filter->mask;
+    filter_ext->filter_mask = filter->mask & 0x1fffffffU;
 
     can_config->all_filters_config.ext_id_filter_list.mcan_filter_elem_count = data->ext_filter_count;
     can_config->all_filters_config.ext_id_filter_list.filter_elem_list = data->ext_filters;
@@ -812,7 +840,7 @@ static int hpm_mcan_add_rx_filter_std(const struct device *dev,
     filter_std->filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH;
     filter_std->can_id_type = MCAN_CAN_ID_TYPE_STANDARD;
     filter_std->filter_id = filter->id;
-    filter_std->filter_mask = ~filter->mask;
+    filter_std->filter_mask = filter->mask & 0x7ffU;
 
     can_config->all_filters_config.std_id_filter_list.mcan_filter_elem_count = data->std_filter_count;
     can_config->all_filters_config.std_id_filter_list.filter_elem_list = data->std_filters;

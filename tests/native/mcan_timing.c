@@ -6,7 +6,8 @@
 #include "drivers/can/hpmicro_mcan_timing.h"
 #define ARG_UNUSED(x) (void)(x)
 #define MCAN_TIMESTAMP_SEL_VALUE_INCREMENT 1
-struct mcan_config { uint32_t baudrate; struct { uint32_t counter_prescaler, timestamp_selection; } timestamp_cfg; };
+#define MCAN_ACCEPT_NON_MATCHING_FRAME_OPTION_REJECT 2
+struct mcan_config { struct { struct { uint32_t accept_non_matching_std_frame_option, accept_non_matching_ext_frame_option; } global_filter_config; } all_filters_config; uint32_t baudrate; struct { uint32_t counter_prescaler, timestamp_selection; } timestamp_cfg; };
 typedef struct mcan_config mcan_config_t;
 struct registers { uint32_t TSCC, TSCV; };
 struct hpm_mcan_config { struct registers *base; };
@@ -30,6 +31,8 @@ int main(void) {
     struct hpm_mcan_data data = {0};
     struct device dev = {.config=&cfg,.data=&data};
     configure_timing(&data.config);
+    assert(data.config.all_filters_config.global_filter_config.accept_non_matching_std_frame_option == 2);
+    assert(data.config.all_filters_config.global_filter_config.accept_non_matching_ext_frame_option == 2);
 #if defined(CONFIG_HPM_MCAN_RX_TIMING)
     assert(data.config.timestamp_cfg.counter_prescaler == 16);
     assert(data.config.timestamp_cfg.timestamp_selection == 1);

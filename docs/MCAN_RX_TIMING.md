@@ -26,3 +26,32 @@ the driver's dequeue policy.
 `bash tests/native/test_mcan_timing.sh` extracts and runs actual setup, callback
 snapshot API and sampling functions in enabled/disabled configurations. On-board
 validation is still required to confirm the counter's effective rate and timing.
+
+## FIFO backlog found on the HPM5E31 bench
+
+The first 64 diagnostic samples all observed FIFO occupancy 8 and RX SOF age
+5968..7040 us (mean 6511.750 us), while ISR body entry to callback took only
+5.935 us on average. Counter rate checks passed with 16 us quantization.
+
+The receive fix drains the FIFO occupancy sampled at ISR entry, capped at the
+hardware 64-slot maximum. It never waits for future traffic. Flags are cleared
+before draining; arrivals during the drain retain their new interrupt flag for
+the next ISR. Both FIFOs are serviced. SDK read failures stop the drain and never
+dispatch stale scratch data. Recovery from an actual peripheral read failure is
+not guaranteed by this drain helper.
+
+Zephyr and MCAN classic filters both use mask bit 1 to compare identifier bits.
+The previous mask inversion made exact hardware masks permissive; the software
+lookup used inverted OR matching. The fix stores the positive 11/29-bit mask,
+uses AND matching, and rejects nonmatching traffic in the global filter.
+Catch-all registration with mask 0 remains supported.
+
+`bash tests/native/test_mcan_rx.sh` exercises extracted actual matching, FIFO
+reader, drain and ISR code, plus production mask conversion expressions:
+exact/range/extended/catch-all masks, eight-frame backlogs in both FIFOs, new
+arrival after interrupt acknowledgement, simultaneous TX/error servicing,
+read failure without stale callbacks, and discarded-frame consumption. The
+configuration test also checks nonmatching rejection with diagnostics on/off.
+
+On-board verification of the combined fix is pending; these observations alone
+do not prove the original accumulation trigger or an end-to-end RTT bound.
