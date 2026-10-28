@@ -6,3 +6,13 @@ config HPM_ESC
     depends on CLOCK_CONTROL && GPIO && PINCTRL
     help
       Enable the HPMicro ESC device and its clock, pins, reset GPIO and IRQs.
+
+config HPM_ESC_PDRAM_WORD_ACCESS
+    bool "Aligned 32-bit ESC process RAM transfers"
+    depends on HPM_ESC && SOC_SERIES_HPM5E00
+    default n
+    help
+      Use increasing aligned 32-bit accesses for process RAM blocks whose
+      address and length are multiples of four. Register accesses and other
+      lengths keep the existing path. No rounded reads or read-modify-writes.
+      Disable to compare with the original byte transfer implementation.

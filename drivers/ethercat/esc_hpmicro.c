@@ -53,10 +53,67 @@ static uintptr_t esc_base(const struct device *dev)
 	return cfg->base;
 }
 
+#if defined(CONFIG_HPM_ESC_PDRAM_WORD_ACCESS)
+/* PDRAM occupies [0x1000, 0x10000). Do not widen register reads, pad across
+ * SyncManager boundaries, or touch the first/last byte more than once.
+ * memcpy on the CPU side permits unaligned SSC buffers without unaligned MMIO.
+ */
+static bool esc_pdram_word_access(uint32_t offset, size_t len)
+{
+	return offset >= 0x1000U && offset < 0x10000U &&
+		len >= 8U && len <= 0x10000U - offset &&
+		(offset & 3U) == 0U && (len & 3U) == 0U;
+}
+
+static void esc_read_words(uintptr_t addr, void *buf, size_t len)
+{
+	if (((uintptr_t)buf & 3U) == 0U) {
+		/* Explicit builtin keeps four-byte copies inline even with -fno-builtin.
+		 * memcpy preserves the effective type of byte-array SSC buffers.
+		 */
+		for (size_t pos = 0; pos < len; pos += 4U) {
+			uint32_t word = *(volatile uint32_t *)(addr + pos);
+			__builtin_memcpy(__builtin_assume_aligned((uint8_t *)buf + pos, 4),
+					 &word, sizeof(word));
+		}
+	} else {
+		for (size_t pos = 0; pos < len; pos += 4U) {
+			uint32_t word = *(volatile uint32_t *)(addr + pos);
+			memcpy((uint8_t *)buf + pos, &word, sizeof(word));
+		}
+	}
+}
+
+static void esc_write_words(uintptr_t addr, const void *buf, size_t len)
+{
+	if (((uintptr_t)buf & 3U) == 0U) {
+		for (size_t pos = 0; pos < len; pos += 4U) {
+			uint32_t word;
+			__builtin_memcpy(&word,
+				__builtin_assume_aligned((const uint8_t *)buf + pos, 4), sizeof(word));
+			*(volatile uint32_t *)(addr + pos) = word;
+		}
+	} else {
+		for (size_t pos = 0; pos < len; pos += 4U) {
+			uint32_t word;
+			memcpy(&word, (const uint8_t *)buf + pos, sizeof(word));
+			*(volatile uint32_t *)(addr + pos) = word;
+		}
+	}
+}
+#endif
+
 static void esc_read_block(const struct device *dev, uint32_t offset, void *buf, size_t len)
 {
 	const struct hpm_esc_config *cfg = dev->config;
 	uintptr_t addr = cfg->base + offset;
+
+#if defined(CONFIG_HPM_ESC_PDRAM_WORD_ACCESS)
+	if (esc_pdram_word_access(offset, len)) {
+		esc_read_words(addr, buf, len);
+		return;
+	}
+#endif
 
 	#if defined(HPM_IP_FEATURE_ESC_BYTE_READ) && HPM_IP_FEATURE_ESC_BYTE_READ
 	for (size_t pos = 0; pos < len; pos++) {
@@ -106,6 +163,12 @@ static void esc_write(const struct device *dev, uint32_t offset,
 		memcpy(&word, buf, sizeof(word));
 		*(volatile uint32_t *)addr = word;
 	} else {
+#if defined(CONFIG_HPM_ESC_PDRAM_WORD_ACCESS)
+		if (esc_pdram_word_access(offset, len)) {
+			esc_write_words(addr, buf, len);
+			return;
+		}
+#endif
 		for (size_t i = 0; i < len; i++) {
 			*(volatile uint8_t *)(addr + i) = ((const uint8_t *)buf)[i];
 		}
