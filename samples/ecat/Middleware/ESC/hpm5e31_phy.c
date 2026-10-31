@@ -224,10 +224,10 @@ hpm_stat_t ecat_phy_config(const struct device *esc_dev)
 	return status_success;
 }
 
+static int prev0 = -1, prev1 = -1;
+
 void ecat_phy_update_link(const struct device *esc_dev)
 {
-	static int prev0 = -1, prev1 = -1;
-	static unsigned int dbg_cnt;
 	uint16_t status = 0U, control = 0U;
 	int up;
 
@@ -269,13 +269,4 @@ void ecat_phy_update_link(const struct device *esc_dev)
 		prev1 = up;
 	}
 
-	/* Debug: periodic raw dump (every ~2s at the 100ms poll rate). */
-	if (++dbg_cnt >= 20U) {
-		dbg_cnt = 0U;
-		uint16_t b0, b1;
-		int r0 = phy_read(esc_dev, BOARD_ECAT_PORT0_PHY_ADDR, PHY_BMSR_REG, &b0);
-		int r1 = phy_read(esc_dev, BOARD_ECAT_PORT1_PHY_ADDR, PHY_BMSR_REG, &b1);
-		printk("ESC phy dump: Port0 BMSR=0x%04x(%d) Port1 BMSR=0x%04x(%d)\n",
-		       b0, r0, b1, r1);
-	}
 }

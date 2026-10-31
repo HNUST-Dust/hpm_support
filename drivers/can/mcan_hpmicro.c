@@ -621,6 +621,7 @@ static int hpm_mcan_validate_frame(struct hpm_mcan_data *data, const struct can_
     return 0;
 }
 
+
 static int hpm_mcan_submit(const struct device *dev, const struct can_frame *frames, size_t count,
                            k_timeout_t timeout, uint64_t deadline_us, can_tx_callback_t callback, void *user_data) {
     const struct hpm_mcan_config *cfg = dev->config;
@@ -636,6 +637,7 @@ static int hpm_mcan_submit(const struct device *dev, const struct can_frame *fra
             return result;
         }
     }
+
     int result = k_sem_take(&data->tx_sem, timeout);
     if (result) {
         return -EAGAIN;
@@ -645,12 +647,14 @@ static int hpm_mcan_submit(const struct device *dev, const struct can_frame *fra
         k_sem_give(&data->tx_sem);
         return result;
     }
+
     enum can_state state;
     (void)hpm_mcan_get_state(dev, &state, NULL);
     if (!data->started || state == CAN_STATE_BUS_OFF) {
         result = data->started ? -ENETUNREACH : -ENETDOWN;
         goto rejected;
     }
+
     for (size_t i = 0; i < count; ++i) {
         mcan_tx_frame_t buffer;
         memset(&buffer, 0, sizeof(buffer));
@@ -669,6 +673,7 @@ static int hpm_mcan_submit(const struct device *dev, const struct can_frame *fra
         }
     }
 #endif
+
     k_sem_reset(&data->tx_fin_sem[0]);
     k_spinlock_key_t key = k_spin_lock(&data->tx_lock);
     mcan_clear_interrupt_flags(can, MCAN_EVENT_TRANSMIT | MCAN_INT_TX_CANCEL_FINISHED);
@@ -693,6 +698,7 @@ static int hpm_mcan_submit(const struct device *dev, const struct can_frame *fra
     }
     mcan_send_add_multiple_requests(can, data->tx_batch.active);
     k_spin_unlock(&data->tx_lock, key);
+
     k_mutex_unlock(&data->tx_mutex);
     if (callback) {
         return 0;

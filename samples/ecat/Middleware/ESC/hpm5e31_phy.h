@@ -10,4 +10,5 @@ void ecat_phy_keep_reset(const struct device *esc_dev);
 hpm_stat_t ecat_phy_config(const struct device *esc_dev);
 void ecat_phy_update_link(const struct device *esc_dev);
 
+
 #endif
