@@ -34,6 +34,8 @@ LOG_MODULE_REGISTER(pwm_hpmicro, CONFIG_PWM_LOG_LEVEL);
 struct pwm_hpmicro_config {
 	HPM_PWM_BASE_TYPE *base;
 	uint32_t clock_name;
+	clk_src_t clock_src;
+	uint32_t clock_div;
 	uint32_t period;
 	uint32_t dead_zone_in_half_cycle;
 	const struct pinctrl_dev_config *pincfg;
@@ -327,6 +329,12 @@ static int pwm_hpmicro_v1_init(const struct device *dev)
 		return err;
 	}
 
+	/* Enable and configure the PWM peripheral clock; the SDK gate
+	 * defaults to off and the DT clocks cell carries source/divider. */
+	clock_add_to_group(config->clock_name, 0);
+	clock_set_source_divider(config->clock_name, config->clock_src,
+				 config->clock_div);
+
 	pwm_get_default_pwm_config(pwm_base, &pwm_config);
 	pwm_config.enable_output = true;
     pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
@@ -351,6 +359,12 @@ static int pwm_hpmicro_v2_init(const struct device *dev)
 	if (err < 0) {
 		return err;
 	}
+
+	/* Enable and configure the PWM peripheral clock; the SDK gate
+	 * defaults to off and the DT clocks cell carries source/divider. */
+	clock_add_to_group(config->clock_name, 0);
+	clock_set_source_divider(config->clock_name, config->clock_src,
+				 config->clock_div);
 
 	/* Deinitialize PWMv2 to reset to known state */
 	pwmv2_deinit(pwm_base);
@@ -380,6 +394,8 @@ static const struct pwm_driver_api pwm_hpmicro_driver_api = {
 	static const struct pwm_hpmicro_config pwm_hpmicro_config_##n = {     \
 		.base = (HPM_PWM_BASE_TYPE *)DT_INST_REG_ADDR(n),	  \
 		.clock_name = DT_INST_CLOCKS_CELL(n, name),		\
+		.clock_src = (clk_src_t)DT_INST_CLOCKS_CELL(n, src),	\
+		.clock_div = DT_INST_CLOCKS_CELL(n, div),		\
 		.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),		  \
 		.period = DT_INST_PROP(n, period_init),			\
 		.dead_zone_in_half_cycle = DT_INST_PROP(n, dead_zone_in_half_cycle),	\
