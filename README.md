@@ -29,6 +29,10 @@
 
 > This repository is bound to **Zephyr v3.7.0 (LTS)** and undergoes related iterations on this version basis.
 
+### PLIC troubleshooting
+
+For an unexpected PLIC interrupt halt, see the [empty-claim investigation](docs/PLIC_EMPTY_CLAIM.md).
+
 ### ✨ Features
 
 | Feature | Description |
