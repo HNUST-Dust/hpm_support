@@ -151,114 +151,76 @@ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
 	const struct pwm_hpmicro_config *config = dev->config;
 	struct pwm_hpmicro_data *data = dev->data;
 	HPM_PWM_BASE_TYPE *pwm_base = config->base;
-	uint32_t rld, xrld, prld, rld_cmp, xrld_cmp;
-	
+	pwmv2_cmp_config_t cmp_cfg[2] = {0};
+	pwmv2_config_t pwm_cfg = {0};
+	pwm_counter_t counter;
+	uint8_t cmp_start_index;
+	uint8_t shadow_reload;
+	uint8_t shadow_cmp;
+
 	if (channel > 7) {
 		return -ENOTSUP;
 	}
-	/* Calculate counter and cmp index based on channel
-	 * Channel 0,1 -> Counter 0, CMP 0-3
-	 * Channel 2,3 -> Counter 1, CMP 4-7
-	 * Channel 4,5 -> Counter 2, CMP 8-11
-	 * Channel 6,7 -> Counter 3, CMP 12-15
-	 */
-	pwm_counter_t counter = (pwm_counter_t)(channel >> 1);
-	uint8_t cmp_start_index = (channel >> 1) << 2;  /* counter * 4 */
-	uint8_t cmp_index1 = cmp_start_index + ((channel & 0x01) << 1);     /* +0/+2 for even/odd */
-	uint8_t cmp_index2 = cmp_index1 + 1;                                /* +1/+3 for even/odd */
-	
-	/* Shadow register allocation for PWMv2:
-	 * Each counter uses 5 shadow registers:
-	 * - Counter 0: shadows 0(reload), 1,2(ch0), 3,4(ch1)
-	 * - Counter 1: shadows 5(reload), 6,7(ch2), 8,9(ch3)  
-	 * - Counter 2: shadows 10(reload), 11,12(ch4), 13,14(ch5)
-	 * - Counter 3: shadows 15(reload), 16,17(ch6), 18,19(ch7)
-	 */
-	uint8_t shadow_reload = counter * 5;                                 /* 0, 5, 10, 15 */
-	uint8_t shadow_cmp1 = shadow_reload + 1 + ((channel & 0x01) << 1);  /* ch0:1, ch1:3 */
-	uint8_t shadow_cmp2 = shadow_cmp1 + 1;                              /* ch0:2, ch1:4 */
-
-	/* Handle polarity inversion */
-	bool invert_output = false;
-	if (flags == PWM_POLARITY_INVERTED) {
-		invert_output = true;
-	} else if (flags == PWM_POLARITY_NORMAL) {
-		invert_output = false;
-	} else {
+	if (period_cycles == 0U || pulse_cycles > period_cycles) {
+		return -EINVAL;
+	}
+	if (period_cycles > 0xffffffU) {
+		return -ENOTSUP;
+	}
+	if ((flags != PWM_POLARITY_NORMAL) && (flags != PWM_POLARITY_INVERTED)) {
 		return -ENOTSUP;
 	}
 
-	/* pwmv2 only support period <= 0xffffff */
-	if (period_cycles > 0xffffff) {
-		return -ENOTSUP;
-	} else {
-		rld = period_cycles;
-		xrld = 0;
-		prld = period_cycles;
-		/* Edge-aligned output: rising edge at 0, falling edge at the
-		 * requested high-time. */
-		rld_cmp = pulse_cycles;
-		xrld_cmp = 0;
-	}
+	counter = (pwm_counter_t)(channel >> 1);
+	cmp_start_index = (uint8_t)((channel >> 1) * 4 + ((channel & 0x01) << 1));
+	shadow_reload = (uint8_t)((channel >> 1) * 5);
+	shadow_cmp = (uint8_t)(shadow_reload + 1 + ((channel & 0x01) << 1));
 
-	/* Unlock shadow registers */
+	/* Edge-aligned output: high while a <= CNT < b, so a = 0, b = duty.
+	 * This mirrors the reference pwmv2 setup (see HPM SDK bldc example). */
+	cmp_cfg[0].cmp = 0U;
+	cmp_cfg[0].enable_half_cmp = false;
+	cmp_cfg[0].enable_hrcmp = false;
+	cmp_cfg[0].cmp_source = cmp_value_from_shadow_val;
+	cmp_cfg[0].cmp_source_index = shadow_cmp;
+	cmp_cfg[0].update_trigger = pwm_shadow_register_update_on_reload;
+	cmp_cfg[1].cmp = pulse_cycles;
+	cmp_cfg[1].enable_half_cmp = false;
+	cmp_cfg[1].enable_hrcmp = false;
+	cmp_cfg[1].cmp_source = cmp_value_from_shadow_val;
+	cmp_cfg[1].cmp_source_index = (uint8_t)(shadow_cmp + 1U);
+	cmp_cfg[1].update_trigger = pwm_shadow_register_update_on_reload;
+
+	pwmv2_get_default_config(&pwm_cfg);
+	pwm_cfg.enable_output = true;
+	pwm_cfg.invert_output = (flags == PWM_POLARITY_INVERTED);
+	pwm_cfg.enable_four_cmp = false;
+	pwm_cfg.update_trigger = pwm_reload_update_on_reload;
+
 	pwmv2_shadow_register_unlock(pwm_base);
+	pwmv2_set_shadow_val(pwm_base, shadow_reload, period_cycles, 0, false);
+	pwmv2_shadow_register_lock(pwm_base);
 
-	/* Set reload value with extended precision */
-	pwmv2_set_shadow_val(pwm_base, shadow_reload, rld, xrld, false);
-	
-	/* Set compare values for PWMv2 edge-aligned mode 
-	* PWMv2 needs two compare values to generate one PWM waveform:
-	* - cmp1: rising edge (usually 0 for edge-aligned)  
-	* - cmp2: falling edge (duty cycle point)
-	*/
-	uint32_t cmp1_val = 0;  /* Rising edge at counter start */
-	uint32_t cmp2_val = rld_cmp;  /* Falling edge for duty cycle */
-	
-	pwmv2_set_shadow_val(pwm_base, shadow_cmp1, cmp1_val, 0, false);
-	pwmv2_set_shadow_val(pwm_base, shadow_cmp2, cmp2_val, xrld_cmp, false);
-
-	/* Configure counter (first time only or when period changes) */
-	pwmv2_counter_select_data_offset_from_shadow_value(pwm_base, counter, shadow_reload);
+	pwmv2_counter_select_data_offset_from_shadow_value(pwm_base, counter,
+							   shadow_reload);
 	pwmv2_counter_burst_disable(pwm_base, counter);
 	pwmv2_set_reload_update_time(pwm_base, counter, pwm_reload_update_on_reload);
 
-	/* Configure compare sources for two CMP values */
-	pwmv2_select_cmp_source(pwm_base, cmp_index1, cmp_value_from_shadow_val, shadow_cmp1);
-	pwmv2_select_cmp_source(pwm_base, cmp_index2, cmp_value_from_shadow_val, shadow_cmp2);
-	pwmv2_cmp_update_trig_time(pwm_base, cmp_index1, pwm_shadow_register_update_on_reload);
-	pwmv2_cmp_update_trig_time(pwm_base, cmp_index2, pwm_shadow_register_update_on_reload);
+	/* Full CFG0/CFG1 (output enable, polarity, force off) and compare
+	 * sources in one go, as the SDK reference does. */
+	pwmv2_setup_waveform(pwm_base, (pwm_channel_t)channel, &pwm_cfg,
+			     cmp_start_index, &cmp_cfg[0], 2);
 
-	/* Set output polarity */
-	if (invert_output) {
-		pwmv2_enable_output_invert(pwm_base, (pwm_channel_t)channel);
-	} else {
-		pwmv2_disable_output_invert(pwm_base, (pwm_channel_t)channel);
+	/* A lone odd channel needs its paired even channel's TRIG_SEL4 set to
+	 * enable the output (PWMV2 manual, PWM[CFG0].TRIG_SEL4 note). */
+	if (((channel & 0x01U) != 0U) &&
+	    ((data->enabled_channels & BIT(channel & ~1U)) == 0U)) {
+		pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)(channel & ~1U));
 	}
 
-	/* Set dead zone if configured */
-	if (config->dead_zone_in_half_cycle > 0) {
-		pwmv2_set_dead_area(pwm_base, (pwm_channel_t)channel, config->dead_zone_in_half_cycle);
-	}
-
-	/* Lock shadow registers to apply changes */
-	pwmv2_shadow_register_lock(pwm_base);
-
-	/* An odd output needs its paired even channel's TRIG_SEL4 set when the
-	 * even output is unused. The compare working value does not identify
-	 * whether Zephyr enabled that output. */
-	const uint32_t even_channel = channel & ~1U;
-	const uint8_t enabled_after = data->enabled_channels | BIT(channel);
-	if ((enabled_after & BIT(even_channel)) == 0U) {
-		pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)even_channel);
-	} else {
-		pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)even_channel);
-	}
-	/* Enable channel output */
 	pwmv2_channel_enable_output(pwm_base, (pwm_channel_t)channel);
-	data->enabled_channels = enabled_after;
-	
-	/* Enable and start counter */
+	data->enabled_channels |= BIT(channel);
+
 	pwmv2_enable_counter(pwm_base, counter);
 	pwmv2_start_pwm_output(pwm_base, counter);
 
