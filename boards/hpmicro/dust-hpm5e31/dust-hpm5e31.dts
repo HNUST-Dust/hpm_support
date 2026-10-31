@@ -52,12 +52,12 @@
 		compatible = "pwm-leds";
 		onboard_imu_heater: onboard_imu_heater {
 			status = "disabled";
-			/* PWM0 shares one period with the 2 kHz buzzer on channel 1. */
+			/* Heater uses PWM0 counter 2; independent of the buzzer (counter 0). */
 			pwms = <&pwm0 4 PWM_HZ(2000) PWM_POLARITY_NORMAL>;
 			label = "Onboard IMU heater MOSFET";
 		};
 		pwm_buzzer: pwm_buzzer {
-			pwms = <&pwm0 1 PWM_HZ(2000) PWM_POLARITY_NORMAL>;
+			pwms = <&pwm0 1 PWM_HZ(4000) PWM_POLARITY_NORMAL>;
 			label = "Onboard buzzer";
 		};
 	};
