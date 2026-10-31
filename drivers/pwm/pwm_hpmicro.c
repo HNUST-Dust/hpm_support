@@ -196,6 +196,10 @@ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
 	pwm_cfg.invert_output = (flags == PWM_POLARITY_INVERTED);
 	pwm_cfg.enable_four_cmp = false;
 	pwm_cfg.update_trigger = pwm_reload_update_on_reload;
+	/* Default config leaves force_trigger = pwm_force_immediately (0), which
+	 * re-enables the FORCE_MODE reset value (force output 0) and pins the
+	 * output low. Disable force explicitly for a plain PWM output. */
+	pwm_cfg.force_trigger = pwm_force_none;
 
 	pwmv2_shadow_register_unlock(pwm_base);
 	pwmv2_set_shadow_val(pwm_base, shadow_reload, period_cycles, 0, false);
