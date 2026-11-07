@@ -17,7 +17,7 @@ extern unsigned char aEepromData[]; /* EEPROM data is created in eeprom.h by SSC
 
 e2p_t ecat_e2p_emulation;
 
-#define ECAT_PARTITION ethercat_eeprom_partition
+#define ECAT_PARTITION BOARD_ECAT_EEPROM_PARTITION
 #define ECAT_FLASH_START (BOARD_FLASH_BASE_ADDRESS + FIXED_PARTITION_OFFSET(ECAT_PARTITION))
 
 BUILD_ASSERT(FIXED_PARTITION_SIZE(ECAT_PARTITION) >= FLASH_EEPROM_SIZE,
