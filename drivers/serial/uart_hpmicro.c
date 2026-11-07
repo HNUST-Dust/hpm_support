@@ -82,6 +82,7 @@ struct uart_hpm_cfg {
 };
 
 struct uart_hpm_data {
+    enum uart_hpm_rx_ready_source rx_ready_source;
 	struct uart_config uart_config;
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	uart_irq_callback_user_data_t user_cb;
@@ -108,7 +109,7 @@ struct uart_hpm_data {
 };
 
 #ifdef CONFIG_UART_ASYNC_API
-static void uart_hpm_async_rx_flush(const struct device *dev);
+static void uart_hpm_async_rx_flush(const struct device *dev, enum uart_hpm_rx_ready_source source);
 static void uart_hpm_handle_rx_timeout(const struct device *dev);
 #if defined(CONFIG_UART_HPMICRO_RX_NATIVE_IDLE)
 static void uart_hpm_native_idle_failed(const struct device *dev, uint32_t generation);
@@ -565,7 +566,13 @@ static void async_evt_tx_done(const struct device *dev)
 	async_user_callback(dev, &event);
 }
 
-static void async_evt_rx_rdy(const struct device *dev)
+enum uart_hpm_rx_ready_source uart_hpm_rx_ready_source_get(const struct device *dev)
+{
+    const struct uart_hpm_data *data = dev->data;
+    return data->rx_ready_source;
+}
+
+static void async_evt_rx_rdy(const struct device *dev, enum uart_hpm_rx_ready_source source)
 {
 	struct uart_hpm_data * const data = dev->data;
 	dma_info_t dma_rxinfo = data->dma_rxinfo;
@@ -586,7 +593,10 @@ static void async_evt_rx_rdy(const struct device *dev)
 
 	/* Only send event for new data */
 	if (event.data.rx.len > 0) {
-		async_user_callback(dev, &event);
+        const enum uart_hpm_rx_ready_source previous = data->rx_ready_source;
+        data->rx_ready_source = source;
+        async_user_callback(dev, &event);
+        data->rx_ready_source = previous;
 	}
 }
 
@@ -610,7 +620,7 @@ static void async_evt_rx_buf_release(const struct device *dev) {
     async_user_callback(dev, &evt);
 }
 
-static void uart_hpm_async_rx_flush(const struct device *dev)
+static void uart_hpm_async_rx_flush(const struct device *dev, enum uart_hpm_rx_ready_source source)
 {
 	struct uart_hpm_data *data = dev->data;
 	size_t rx_rcv_len;
@@ -642,7 +652,7 @@ static void uart_hpm_async_rx_flush(const struct device *dev)
 				 stat.pending_length;
 	if (rx_rcv_len > 0) {
 		data->dma_rxinfo.current_size = rx_rcv_len;
-		async_evt_rx_rdy(dev);
+		async_evt_rx_rdy(dev, source);
 	} else {
 		data->dma_rxinfo.current_size = 0;
 	}
@@ -681,7 +691,7 @@ static int uart_hpm_rx_disable(const struct device *dev) {
 #endif
     uart_disable_irq(config->base, uart_intr_rx_data_avail_or_timeout);
     dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
-    uart_hpm_async_rx_flush(dev);
+    uart_hpm_async_rx_flush(dev, UART_HPM_RX_READY_OTHER);
     if (generation != data->rx_generation) {
         irq_unlock(key);
         return 0;
@@ -777,7 +787,7 @@ static void uart_hpm_handle_rx_timeout(const struct device *dev) {
     /* 冻结 DMA 计数，发布已经到达 current buffer 的新字节，再继续接收。 */
     const uint32_t generation = data->rx_generation;
     dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
-    uart_hpm_async_rx_flush(dev);
+    uart_hpm_async_rx_flush(dev, UART_HPM_RX_READY_OTHER);
     if (uart_hpm_idle_resume(generation, data->rx_generation, data->dma_rxinfo.current_mode)) {
         dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
     }
@@ -848,7 +858,7 @@ int uart_hpm_rx_line_idle_flush(const struct device *dev) {
         if (!ret) {
             data->dma_rxinfo.current_size = length;
             ret = length;
-            async_evt_rx_rdy(dev);
+            async_evt_rx_rdy(dev, UART_HPM_RX_READY_IDLE);
         }
         // A synchronous callback may disable/restart RX. Never resume a stale
         // transfer over a new session configured by that callback.
@@ -1199,7 +1209,7 @@ static void uart_hpm_dma_callback(const struct device *dev, void *arg, uint32_t 
              * released，最后切换到 next buffer 并重新启动 DMA。
              */
             const uint32_t generation = data->rx_generation;
-            uart_hpm_async_rx_flush(data->dma_rxinfo.dev);
+            uart_hpm_async_rx_flush(data->dma_rxinfo.dev, UART_HPM_RX_READY_FULL);
             if (generation != data->rx_generation) {
                 return;
             }

@@ -26,7 +26,9 @@ struct uart_event { int type; union {
     struct { uint8_t *buf; } rx_buf;
     struct { int reason; struct {uint8_t *buf; uint32_t len, offset;} data; } rx_stop;
 } data; };
+#include "uart_rx_ready_enum.inc"
 struct uart_hpm_data {
+    enum uart_hpm_rx_ready_source rx_ready_source;
     bool rx_native_idle_mode, rx_line_idle_mode, rx_circular_mode;
     uint32_t rx_generation;
     dma_info_t dma_rxinfo;
@@ -39,6 +41,7 @@ struct uart_hpm_data {
 static struct dma_status dma;
 static unsigned resumed, released, ready, disabled, stopped_count;
 static int dma_error;
+static unsigned ready_sources[3];
 static bool terminal_during_suspend, restart_on_disabled, stop_on_ready;
 static uint8_t a[128], b[128], fresh[128];
 static unsigned irq_lock(void) { return 0; }
@@ -65,6 +68,9 @@ static void Callback(const struct device *dev, struct uart_event *event, void *u
     (void)user;
     struct uart_hpm_data *data = dev->data;
     if (event->type == UART_RX_RDY) {
+        const enum uart_hpm_rx_ready_source source = uart_hpm_rx_ready_source_get(dev);
+        assert(source >= UART_HPM_RX_READY_OTHER && source <= UART_HPM_RX_READY_FULL);
+        ++ready_sources[source];
         assert(event->data.rx.buf == a);
         assert(event->data.rx.offset == ready);
         ready += event->data.rx.len;
@@ -97,6 +103,7 @@ static void Reset(struct device *dev)
     data->idle_user_callback = Callback;
     dma = (struct dma_status){true, 110};
     resumed=ready=released=disabled=stopped_count=0;
+    memset(ready_sources, 0, sizeof(ready_sources));
     dma_error=0;
     terminal_during_suspend=restart_on_disabled=stop_on_ready=false;
 }
@@ -110,6 +117,8 @@ int main(void)
     registers.idle = true;
     uart_hpm_isr(&dev);
     assert(!registers.idle && ready == 18 && resumed == 1 && released == 0);
+    assert(ready_sources[UART_HPM_RX_READY_IDLE] == 1);
+    assert(uart_hpm_rx_ready_source_get(&dev) == UART_HPM_RX_READY_OTHER);
     registers.idle = true;
     uart_hpm_isr(&dev);
     assert(ready == 18 && resumed == 2);
@@ -139,5 +148,11 @@ int main(void)
     uart_hpm_rx_disable(&dev);
     assert(!data.rx_native_idle_mode && !data.dma_rxinfo.current_mode);
     assert(ready == 18 && released == 2 && disabled == 1);
+    assert(ready_sources[UART_HPM_RX_READY_OTHER] == 1);
+    Reset(&dev);
+    data.dma_rxinfo.current_size = 18;
+    async_evt_rx_rdy(&dev, UART_HPM_RX_READY_FULL);
+    assert(ready == 18 && ready_sources[UART_HPM_RX_READY_FULL] == 1);
+    assert(uart_hpm_rx_ready_source_get(&dev) == UART_HPM_RX_READY_OTHER);
     puts("Real UART driver idle ISR / DMA partial flush / callback restart contracts PASS");
 }

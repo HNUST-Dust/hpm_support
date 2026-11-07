@@ -64,6 +64,14 @@ int uart_hpm_rx_line_idle_start(const struct device *dev, uint32_t timeout_us);
  */
 int uart_hpm_rx_line_idle_flush(const struct device *dev);
 
+/* Source of the current synchronous UART_RX_RDY callback. */
+enum uart_hpm_rx_ready_source {
+    UART_HPM_RX_READY_OTHER,
+    UART_HPM_RX_READY_IDLE,
+    UART_HPM_RX_READY_FULL,
+};
+enum uart_hpm_rx_ready_source uart_hpm_rx_ready_source_get(const struct device *dev);
+
 #ifdef __cplusplus
 }
 #endif
