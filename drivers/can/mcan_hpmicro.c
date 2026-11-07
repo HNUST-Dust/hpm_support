@@ -623,7 +623,8 @@ static int hpm_mcan_validate_frame(struct hpm_mcan_data *data, const struct can_
 
 
 static int hpm_mcan_submit(const struct device *dev, const struct can_frame *frames, size_t count,
-                           k_timeout_t timeout, uint64_t deadline_us, can_tx_callback_t callback, void *user_data) {
+                           k_timeout_t timeout, uint64_t deadline_us, can_tx_callback_t callback, void *user_data,
+                           bool (*admit)(void *), void *admit_context) {
     const struct hpm_mcan_config *cfg = dev->config;
     struct hpm_mcan_data *data = dev->data;
     MCAN_Type *can = cfg->base;
@@ -687,13 +688,15 @@ static int hpm_mcan_submit(const struct device *dev, const struct can_frame *fra
     data->tx_sync_waiting = callback == NULL;
     data->tx_result = 0;
     /* 消息 RAM 装载可能耗尽租约；在真正请求硬件发送前再次复核。 */
-    if (deadline_us && k_ticks_to_us_floor64(k_uptime_ticks()) >= deadline_us) {
+    const bool rejected_by_guard = admit && !admit(admit_context);
+    if (rejected_by_guard ||
+        (deadline_us && k_ticks_to_us_floor64(k_uptime_ticks()) >= deadline_us)) {
         data->tx_batch.active = 0;
         data->tx_sync_waiting = false;
         data->tx_fin_cb[0] = NULL;
         data->tx_fin_cb_arg[0] = NULL;
         k_spin_unlock(&data->tx_lock, key);
-        result = -ETIMEDOUT;
+        result = rejected_by_guard ? -ECANCELED : -ETIMEDOUT;
         goto rejected;
     }
     mcan_send_add_multiple_requests(can, data->tx_batch.active);
@@ -724,11 +727,12 @@ rejected:
 
 static int hpm_mcan_send(const struct device *dev, const struct can_frame *frame,
                          k_timeout_t timeout, can_tx_callback_t callback, void *user_data) {
-    return hpm_mcan_submit(dev, frame, 1, timeout, 0, callback, user_data);
+    return hpm_mcan_submit(dev, frame, 1, timeout, 0, callback, user_data, NULL, NULL);
 }
 
 static int hpm_mcan_batch(const struct device *dev, const struct can_frame *frames, size_t count,
-                        k_timeout_t timeout, uint64_t deadline_us, can_tx_callback_t callback, void *user_data) {
+                        k_timeout_t timeout, uint64_t deadline_us, can_tx_callback_t callback, void *user_data,
+                           bool (*admit)(void *), void *admit_context) {
     if (!dev || !frames || !callback || !count || count > 16 || k_is_in_isr()) {
         return -EINVAL;
     }
@@ -740,14 +744,14 @@ static int hpm_mcan_batch(const struct device *dev, const struct can_frame *fram
             return -EINVAL;
         }
     }
-    return hpm_mcan_submit(dev, frames, count, timeout, deadline_us, callback, user_data);
+    return hpm_mcan_submit(dev, frames, count, timeout, deadline_us, callback, user_data, admit, admit_context);
 }
 
 int hpm_mcan_send_batch(const struct device *dev, const struct can_frame *frames,
                         size_t count, k_timeout_t timeout,
                         can_tx_callback_t callback, void *user_data)
 {
-    return hpm_mcan_batch(dev, frames, count, timeout, 0, callback, user_data);
+    return hpm_mcan_batch(dev, frames, count, timeout, 0, callback, user_data, NULL, NULL);
 }
 int hpm_mcan_send_batch_until(const struct device *dev, const struct can_frame *frames,
                               size_t count, k_timeout_t timeout, uint64_t deadline_us,
@@ -756,7 +760,19 @@ int hpm_mcan_send_batch_until(const struct device *dev, const struct can_frame *
     if (!deadline_us) {
         return -EINVAL;
     }
-    return hpm_mcan_batch(dev, frames, count, timeout, deadline_us, callback, user_data);
+    return hpm_mcan_batch(dev, frames, count, timeout, deadline_us, callback, user_data, NULL, NULL);
+}
+
+int hpm_mcan_send_batch_guarded(const struct device *dev, const struct can_frame *frames,
+                               size_t count, k_timeout_t timeout, uint64_t deadline_us,
+                               can_tx_callback_t callback, void *user_data,
+                               bool (*admit)(void *), void *admit_context)
+{
+    if (!deadline_us || !admit) {
+        return -EINVAL;
+    }
+    return hpm_mcan_batch(dev, frames, count, timeout, deadline_us, callback,
+                          user_data, admit, admit_context);
 }
 
 static int hpm_mcan_add_rx_filter_ext(const struct device *dev,

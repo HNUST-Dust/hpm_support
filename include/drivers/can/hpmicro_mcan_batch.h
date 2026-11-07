@@ -23,6 +23,15 @@ int hpm_mcan_send_batch(const struct device *dev, const struct can_frame *frames
 int hpm_mcan_send_batch_until(const struct device *dev, const struct can_frame *frames,
                               size_t count, k_timeout_t timeout, uint64_t deadline_us,
                               can_tx_callback_t callback, void *user_data);
+/* Prepare with IRQs enabled, then call admit while the final TXBAR spinlock
+ * masks interrupts. The synchronous, non-blocking predicate must remain valid
+ * until this call returns. False rejects with -ECANCELED, with no hardware
+ * request and no callback. The ordinary completion callback is unchanged.
+ */
+int hpm_mcan_send_batch_guarded(const struct device *dev, const struct can_frame *frames,
+                               size_t count, k_timeout_t timeout, uint64_t deadline_us,
+                               can_tx_callback_t callback, void *user_data,
+                               bool (*admit)(void *), void *admit_context);
 /* Cancel the current batch and wait for hardware pending bits to clear.
  * timeout_us must be 1..20000; includes mutex acquisition. Returns -ETIMEDOUT
  * if hardware is still pending. Admission remains blocked in that case.
