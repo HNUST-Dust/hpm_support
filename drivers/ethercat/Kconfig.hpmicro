@@ -13,6 +13,7 @@ config HPM_ESC_PDRAM_WORD_ACCESS
     default n
     help
       Use increasing aligned 32-bit accesses for process RAM blocks whose
-      address and length are multiples of four. Register accesses and other
-      lengths keep the existing path. No rounded reads or read-modify-writes.
+      start address is a multiple of four, then access any trailing 1-3 bytes
+      individually. Register accesses keep the existing path. No rounded reads
+      or read-modify-writes, and no access beyond the requested buffer.
       Disable to compare with the original byte transfer implementation.

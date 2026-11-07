@@ -62,7 +62,7 @@ static bool esc_pdram_word_access(uint32_t offset, size_t len)
 {
 	return offset >= 0x1000U && offset < 0x10000U &&
 		len >= 8U && len <= 0x10000U - offset &&
-		(offset & 3U) == 0U && (len & 3U) == 0U;
+		(offset & 3U) == 0U;
 }
 
 static void esc_read_words(uintptr_t addr, void *buf, size_t len)
@@ -71,34 +71,40 @@ static void esc_read_words(uintptr_t addr, void *buf, size_t len)
 		/* Explicit builtin keeps four-byte copies inline even with -fno-builtin.
 		 * memcpy preserves the effective type of byte-array SSC buffers.
 		 */
-		for (size_t pos = 0; pos < len; pos += 4U) {
+		for (size_t pos = 0; pos + 4U <= len; pos += 4U) {
 			uint32_t word = *(volatile uint32_t *)(addr + pos);
 			__builtin_memcpy(__builtin_assume_aligned((uint8_t *)buf + pos, 4),
 					 &word, sizeof(word));
 		}
 	} else {
-		for (size_t pos = 0; pos < len; pos += 4U) {
+		for (size_t pos = 0; pos + 4U <= len; pos += 4U) {
 			uint32_t word = *(volatile uint32_t *)(addr + pos);
 			memcpy((uint8_t *)buf + pos, &word, sizeof(word));
 		}
+	}
+	for (size_t pos = len & ~(size_t)3U; pos < len; ++pos) {
+		((uint8_t *)buf)[pos] = *(volatile uint8_t *)(addr + pos);
 	}
 }
 
 static void esc_write_words(uintptr_t addr, const void *buf, size_t len)
 {
 	if (((uintptr_t)buf & 3U) == 0U) {
-		for (size_t pos = 0; pos < len; pos += 4U) {
+		for (size_t pos = 0; pos + 4U <= len; pos += 4U) {
 			uint32_t word;
 			__builtin_memcpy(&word,
 				__builtin_assume_aligned((const uint8_t *)buf + pos, 4), sizeof(word));
 			*(volatile uint32_t *)(addr + pos) = word;
 		}
 	} else {
-		for (size_t pos = 0; pos < len; pos += 4U) {
+		for (size_t pos = 0; pos + 4U <= len; pos += 4U) {
 			uint32_t word;
 			memcpy(&word, (const uint8_t *)buf + pos, sizeof(word));
 			*(volatile uint32_t *)(addr + pos) = word;
 		}
+	}
+	for (size_t pos = len & ~(size_t)3U; pos < len; ++pos) {
+		*(volatile uint8_t *)(addr + pos) = ((const uint8_t *)buf)[pos];
 	}
 }
 #endif
@@ -315,12 +321,14 @@ static void esc_set_link_state_z(const struct device *dev, unsigned int port, bo
 
 static void esc_isr(const void *arg, enum hpm_esc_irq irq)
 {
+
 	const struct device *dev = arg;
 	struct hpm_esc_data *data = dev->data;
 
 	if (data->callbacks[irq] != NULL) {
 		data->callbacks[irq](dev, data->callback_data[irq]);
 	}
+
 }
 
 #define ESC_ISR(n) \
